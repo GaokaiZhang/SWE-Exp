@@ -71,13 +71,15 @@ def add_data_to_jsonl(file_path, new_data):
 
 
 def main(instance_id, max_iterations, max_finish_nodes, max_expansions, flag):
-    completion_model = CompletionModel(model="deepseek/deepseek-chat", temperature=0.7)
-    discriminator_model = CompletionModel(model="deepseek/deepseek-chat", temperature=1)
-    value_model = CompletionModel(model="deepseek/deepseek-chat", temperature=0.2)
+    # Using Claude Sonnet 4.5
+    completion_model = CompletionModel(model="claude-sonnet-4-5-20250929", temperature=0.7)
+    discriminator_model = CompletionModel(model="claude-sonnet-4-5-20250929", temperature=1)
+    value_model = CompletionModel(model="claude-sonnet-4-5-20250929", temperature=0.2)
 
-    completion_model.response_format = LLMResponseFormat.REACT
-    value_model.response_format = LLMResponseFormat.REACT
-    discriminator_model.response_format = LLMResponseFormat.REACT
+    # Use JSON mode for better structured output compatibility with Sonnet 4
+    completion_model.response_format = LLMResponseFormat.JSON
+    value_model.response_format = LLMResponseFormat.JSON
+    discriminator_model.response_format = LLMResponseFormat.JSON
 
     instance = get_moatless_instance(instance_id=instance_id)  
     repository = create_repository(instance)

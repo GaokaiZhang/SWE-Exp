@@ -133,7 +133,7 @@ class CompletionModel(BaseModel):
                 @model_validator(mode="before")
                 def validate_action(cls, data: dict) -> dict:
                     if not isinstance(data, dict):
-                        raise ValidationError("Expected dictionary input")
+                        raise ValueError("Expected dictionary input")
 
                     action_type = data.get("action_type")
                     if not action_type:
@@ -150,7 +150,7 @@ class CompletionModel(BaseModel):
                     )
                     if not action_class:
                         action_names = [action.name for action in avalabile_actions]
-                        raise ValidationError(
+                        raise ValueError(
                             f"Unknown action type: {action_type}. Available actions: {', '.join(action_names)}"
                         )
 
@@ -328,7 +328,7 @@ class CompletionModel(BaseModel):
         dump = super().model_dump(**kwargs)
         if "model_api_key" in dump:
             dump["model_api_key"] = None
-        if "response_format" in dump:
+        if "response_format" in dump and dump["response_format"] is not None:
             dump["response_format"] = dump["response_format"].value
         return dump
 

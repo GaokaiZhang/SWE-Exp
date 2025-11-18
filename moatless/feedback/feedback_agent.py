@@ -220,7 +220,7 @@ class FeedbackAgent(FeedbackGenerator):
 
         # Format message history section
         message_generator = MessageHistoryGenerator(
-            message_history_type=MessageHistoryType.SUMMARY,
+            message_history_type=MessageHistoryType.REACT,  # Changed from SUMMARY to REACT (SUMMARY handler not implemented)
             include_file_context=True,
             include_git_patch=True,
             include_root_node=False,

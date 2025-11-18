@@ -401,9 +401,22 @@ class StructuredOutput(BaseModel):
                 json_data = match.group(1).strip()
 
             parsed_data = json_repair.loads(json_data)
-            if parsed_data.get('action_type'):
-                if parsed_data['action_type'].endswith("Args"):
-                    parsed_data['action_type'] = parsed_data['action_type'][:-len("Args")]
+
+            # Handle cases where Claude returns a list instead of a dict
+            if isinstance(parsed_data, list):
+                if len(parsed_data) == 1 and isinstance(parsed_data[0], dict):
+                    # If it's a single-element list containing a dict, unwrap it
+                    logger.info("Unwrapping single-element list to dict")
+                    parsed_data = parsed_data[0]
+                elif len(parsed_data) == 0:
+                    raise ValueError("Parsed JSON is an empty list")
+                else:
+                    raise ValueError(f"Parsed JSON is a list with {len(parsed_data)} elements, expected a dictionary")
+
+            if isinstance(parsed_data, dict):
+                if parsed_data.get('action_type'):
+                    if parsed_data['action_type'].endswith("Args"):
+                        parsed_data['action_type'] = parsed_data['action_type'][:-len("Args")]
             logger.info("JSON Validate Successful")
             def unescape_values(obj):
                 if isinstance(obj, dict):

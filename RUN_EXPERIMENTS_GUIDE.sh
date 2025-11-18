@@ -1,0 +1,246 @@
+#!/bin/bash
+
+################################################################################
+# EXPERIMENT EXECUTION GUIDE
+# This script documents the commands to run the complete experiment workflow
+#
+# WORKFLOW OVERVIEW:
+# Script 1: Run baseline on 30 test + 201 train (no experience)
+# Script 2: Build experience from 201 train, test 30 with experience
+# Script 3: Evaluate baseline results (30 test instances)
+# Script 4: Evaluate experience results (30 test instances) + comparison
+#
+# RUN SCRIPTS IN ORDER: 1 → (2 & 3 in parallel) → 4
+################################################################################
+
+set -e  # Exit on error
+
+# Create logs directory
+mkdir -p logs
+
+echo "========================================================================"
+echo "EXPERIMENT WORKFLOW GUIDE"
+echo "========================================================================"
+echo ""
+
+################################################################################
+# SCRIPT 1: BASELINE EXPERIMENT (Run 30 test + 201 train WITHOUT experience)
+################################################################################
+echo "========================================================================"
+echo "SCRIPT 1: BASELINE EXPERIMENT"
+echo "========================================================================"
+echo "Purpose:"
+echo "  - Phase 1: Run 30 test instances without experience"
+echo "           → Results: django/test_baseline_<timestamp>.jsonl"
+echo "           → Trajectories: DELETED (prevent data leakage)"
+echo "  - Phase 2: Run 201 train instances without experience"
+echo "           → Results: django/train_baseline_<timestamp>.jsonl"
+echo "           → Trajectories: KEPT in tmp/trajectory/ (for experience mining)"
+echo "  - Phase 3: Combine all results"
+echo "           → Results: django/all_baseline_<timestamp>.jsonl"
+echo ""
+echo "COMMAND:"
+echo "  nohup bash run_baseline_experiment.sh > logs/script1_baseline.log 2>&1 &"
+echo ""
+echo "WHEN TO RUN: Run first, before all other scripts"
+echo ""
+echo "ESTIMATED TIME: ~20-40 hours (depends on API rate limits)"
+echo ""
+echo "CHECK PROGRESS:"
+echo "  tail -f logs/script1_baseline.log"
+echo ""
+echo "VERIFY COMPLETION:"
+echo "  # Check that all phases completed"
+echo "  grep -E 'Phase 1 completed|Phase 2 completed|Phase 3 completed' logs/script1_baseline.log"
+echo "  # Verify result files exist"
+echo "  ls -lh django/test_baseline_*.jsonl"
+echo "  ls -lh django/train_baseline_*.jsonl"
+echo "  ls -lh django/all_baseline_*.jsonl"
+echo "  # Verify 201 train trajectories exist"
+echo "  ls -d tmp/trajectory/django__django-* | wc -l  # Should be ~201"
+echo ""
+echo "========================================================================"
+echo ""
+read -p "Press Enter when Script 1 is complete to continue..."
+echo ""
+
+################################################################################
+# SCRIPT 2 & 3: RUN IN PARALLEL AFTER SCRIPT 1 COMPLETES
+################################################################################
+echo "========================================================================"
+echo "SCRIPTS 2 & 3: RUN IN PARALLEL"
+echo "========================================================================"
+echo "After Script 1 completes, run Scripts 2 and 3 simultaneously:"
+echo ""
+
+################################################################################
+# SCRIPT 2: EXPERIENCE EXPERIMENT (Build experience from 201, test 30 with it)
+################################################################################
+echo "--------------------------------------------------------------------"
+echo "SCRIPT 2: EXPERIENCE EXPERIMENT"
+echo "--------------------------------------------------------------------"
+echo "Purpose:"
+echo "  - Stage 2.1: Extract issue types from problem statements"
+echo "             → Output: tmp/het/verified_issue_types_final.json"
+echo "  - Stage 2.2: Mine experiences from 201 train trajectories"
+echo "             → Output: tmp/het/verified_experience_tree.json"
+echo "  - Stage 4:   Run 30 test instances WITH experience"
+echo "             → Results: django/test_with_experience_<timestamp>.jsonl"
+echo ""
+echo "COMMAND:"
+echo "  nohup bash run_experience_experiment.sh > logs/script2_experience.log 2>&1 &"
+echo ""
+echo "WHEN TO RUN: After Script 1 completes (runs in parallel with Script 3)"
+echo ""
+echo "ESTIMATED TIME: ~10-20 hours"
+echo ""
+echo "CHECK PROGRESS:"
+echo "  tail -f logs/script2_experience.log"
+echo ""
+echo "VERIFY COMPLETION:"
+echo "  # Check that all stages completed"
+echo "  grep -E 'Stage 2.1 completed|Stage 2.2 completed|Stage 4 completed' logs/script2_experience.log"
+echo "  # Verify experience files exist"
+echo "  ls -lh tmp/het/verified_issue_types_final.json"
+echo "  ls -lh tmp/het/verified_experience_tree.json"
+echo "  # Verify result file exists"
+echo "  ls -lh django/test_with_experience_*.jsonl"
+echo ""
+
+################################################################################
+# SCRIPT 3: EVALUATE BASELINE (Docker evaluation of 30 test baseline patches)
+################################################################################
+echo "--------------------------------------------------------------------"
+echo "SCRIPT 3: EVALUATE BASELINE RESULTS"
+echo "--------------------------------------------------------------------"
+echo "Purpose:"
+echo "  - Evaluate baseline patches (30 test instances) in Docker testbed"
+echo "  - Generate per-instance results and summary"
+echo "           → Output: evaluation/baseline_<timestamp>/"
+echo ""
+echo "COMMAND:"
+echo "  nohup bash run_evaluate_baseline.sh > logs/script3_eval_baseline.log 2>&1 &"
+echo ""
+echo "WHEN TO RUN: After Script 1 completes (runs in parallel with Script 2)"
+echo ""
+echo "ESTIMATED TIME: ~2-4 hours (depends on test suite complexity)"
+echo ""
+echo "CHECK PROGRESS:"
+echo "  tail -f logs/script3_eval_baseline.log"
+echo ""
+echo "VERIFY COMPLETION:"
+echo "  # Check evaluation completed"
+echo "  grep -E 'Evaluation complete|Summary saved' logs/script3_eval_baseline.log"
+echo "  # Verify evaluation results exist"
+echo "  ls -d evaluation/baseline_*/"
+echo "  # View summary"
+echo "  cat evaluation/baseline_*/evaluation_summary.json | jq '.'"
+echo ""
+echo "========================================================================"
+echo ""
+read -p "Press Enter when Scripts 2 & 3 are both complete to continue..."
+echo ""
+
+################################################################################
+# SCRIPT 4: EVALUATE EXPERIENCE (Run AFTER Scripts 2 & 3 complete)
+################################################################################
+echo "========================================================================"
+echo "SCRIPT 4: EVALUATE EXPERIENCE RESULTS"
+echo "========================================================================"
+echo "Purpose:"
+echo "  - Evaluate experience patches (30 test instances) in Docker testbed"
+echo "  - Generate per-instance results and summary"
+echo "  - Compare with baseline to show improvements/regressions"
+echo "           → Output: evaluation/experience_<timestamp>/"
+echo ""
+echo "COMMAND:"
+echo "  nohup bash run_evaluate_experience.sh > logs/script4_eval_experience.log 2>&1 &"
+echo ""
+echo "WHEN TO RUN: After BOTH Script 2 AND Script 3 complete"
+echo ""
+echo "ESTIMATED TIME: ~2-4 hours"
+echo ""
+echo "CHECK PROGRESS:"
+echo "  tail -f logs/script4_eval_experience.log"
+echo ""
+echo "VERIFY COMPLETION:"
+echo "  # Check evaluation completed"
+echo "  grep -E 'Evaluation complete|Comparison with baseline' logs/script4_eval_experience.log"
+echo "  # Verify evaluation results exist"
+echo "  ls -d evaluation/experience_*/"
+echo "  # View summary and comparison"
+echo "  cat evaluation/experience_*/evaluation_summary.json | jq '.'"
+echo ""
+echo "========================================================================"
+echo ""
+
+################################################################################
+# FINAL VERIFICATION
+################################################################################
+echo "========================================================================"
+echo "FINAL VERIFICATION - CHECK ALL OUTPUTS"
+echo "========================================================================"
+echo ""
+echo "# 1. Check all log files completed successfully"
+echo "  grep -l 'completed' logs/*.log"
+echo ""
+echo "# 2. Verify baseline results (30 test + 201 train)"
+echo "  wc -l django/test_baseline_*.jsonl    # Should be ~30"
+echo "  wc -l django/train_baseline_*.jsonl   # Should be ~201"
+echo "  wc -l django/all_baseline_*.jsonl     # Should be ~231"
+echo ""
+echo "# 3. Verify experience results (30 test)"
+echo "  wc -l django/test_with_experience_*.jsonl  # Should be ~30"
+echo ""
+echo "# 4. Verify experience files exist"
+echo "  ls -lh tmp/het/verified_issue_types_final.json"
+echo "  ls -lh tmp/het/verified_experience_tree.json"
+echo ""
+echo "# 5. Verify evaluation results"
+echo "  ls -d evaluation/baseline_*/"
+echo "  ls -d evaluation/experience_*/"
+echo ""
+echo "# 6. Compare baseline vs experience performance"
+echo "  echo 'Baseline success rate:'"
+echo "  cat evaluation/baseline_*/evaluation_summary.json | jq '.resolved_count, .total_count'"
+echo "  echo 'Experience success rate:'"
+echo "  cat evaluation/experience_*/evaluation_summary.json | jq '.resolved_count, .total_count'"
+echo ""
+echo "========================================================================"
+echo ""
+
+################################################################################
+# QUICK REFERENCE - COPY/PASTE COMMANDS
+################################################################################
+echo "========================================================================"
+echo "QUICK REFERENCE - COMMANDS TO RUN"
+echo "========================================================================"
+echo ""
+echo "# Step 1: Run baseline experiment (30 test + 201 train)"
+echo "nohup bash run_baseline_experiment.sh > logs/script1_baseline.log 2>&1 &"
+echo ""
+echo "# Step 2: After Step 1 completes, run these TWO commands in parallel:"
+echo "nohup bash run_experience_experiment.sh > logs/script2_experience.log 2>&1 &"
+echo "nohup bash run_evaluate_baseline.sh > logs/script3_eval_baseline.log 2>&1 &"
+echo ""
+echo "# Step 3: After Steps 2 complete, run evaluation with experience:"
+echo "nohup bash run_evaluate_experience.sh > logs/script4_eval_experience.log 2>&1 &"
+echo ""
+echo "# Monitor progress:"
+echo "tail -f logs/script1_baseline.log"
+echo "tail -f logs/script2_experience.log"
+echo "tail -f logs/script3_eval_baseline.log"
+echo "tail -f logs/script4_eval_experience.log"
+echo ""
+echo "# Check all running jobs:"
+echo "jobs -l"
+echo ""
+echo "========================================================================"
+echo ""
+echo "EXECUTION ORDER:"
+echo "  1. Run Script 1 first → wait for completion"
+echo "  2. Run Scripts 2 & 3 in parallel → wait for both to complete"
+echo "  3. Run Script 4 last → final evaluation and comparison"
+echo ""
+echo "TOTAL ESTIMATED TIME: ~30-50 hours"
+echo "========================================================================"

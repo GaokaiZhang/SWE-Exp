@@ -268,38 +268,40 @@ Your output must strictly follow the JSON format below:
 
 
     def load_experience(self, exp: Dict, type) -> str:
+        exp_data = exp[type]
         if type == 'perspective':
-            if isinstance(exp[type], str):
-                return f'***Experience***: {exp[type]}\n'
-            elif isinstance(exp[type], list):
+            if isinstance(exp_data, str):
+                return f'***Experience***: {exp_data}\n'
+            elif isinstance(exp_data, list):
                 tmp = ''
-                for i in range(len(exp[type])):
-                    tmp += f'***Experience {str(i + 1)}***: {exp[type][i]}\n'
+                for i in range(len(exp_data)):
+                    tmp += f'***Experience {str(i + 1)}***: {exp_data[i]}\n'
                 return tmp
         elif type == 'positioning':
-            if isinstance(exp[type], dict):
+            if isinstance(exp_data, dict):
                 tmp = ''
-                for k, v in exp[type].items():
+                for k, v in exp_data.items():
                     tmp += f'***{k}***: {v}\n'
                 return tmp
-            elif isinstance(exp[type], list):
+            elif isinstance(exp_data, list):
                 tmp = ''
-                for i in range(len(exp[type])):
-                    tmp += f'***Experience {str(i + 1)}***: {exp[type][i]}\n'
+                for i in range(len(exp_data)):
+                    tmp += f'***Experience {str(i + 1)}***: {exp_data[i]}\n'
                 return tmp
         elif type == 'modification':
-            if isinstance(exp[type], dict):
+            if isinstance(exp_data, dict):
                 tmp = ''
-                for i in range(len(exp[type]['experience'])):
-                    tmp += f'***Experience {str(i + 1)}***: {exp[type]['experience'][i]}\n'
+                exp_list = exp_data['experience']
+                for i in range(len(exp_list)):
+                    tmp += f'***Experience {str(i + 1)}***: {exp_list[i]}\n'
                 return tmp
-            elif isinstance(exp[type], list):
+            elif isinstance(exp_data, list):
                 tmp = ''
-                for i in range(len(exp[type])):
-                    tmp += f'***Experience {str(i + 1)}***: {exp[type][i]}\n'
+                for i in range(len(exp_data)):
+                    tmp += f'***Experience {str(i + 1)}***: {exp_data[i]}\n'
                 return tmp
             else:
-                return f'***Experience 1***: {str(exp[type])}\n'
+                return f'***Experience 1***: {str(exp_data)}\n'
 
 
     @retry(
@@ -361,7 +363,8 @@ Output only the following JSON structure:
 '''
         enhanced_instruction = instruction
         for id, exp in old_experiences.items():
-            experiences = f'***Past Issue***: {issue_type[id]['issue']}\n'
+            issue_data = issue_type[id]
+            experiences = f'***Past Issue***: {issue_data["issue"]}\n'
             if type == 'perspective':
                 experiences += self.load_experience(exp, type)
                 experiences += '\n'
