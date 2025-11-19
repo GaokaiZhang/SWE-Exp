@@ -404,14 +404,17 @@ class StructuredOutput(BaseModel):
 
             # Handle cases where Claude returns a list instead of a dict
             if isinstance(parsed_data, list):
-                if len(parsed_data) == 1 and isinstance(parsed_data[0], dict):
-                    # If it's a single-element list containing a dict, unwrap it
-                    logger.info("Unwrapping single-element list to dict")
-                    parsed_data = parsed_data[0]
-                elif len(parsed_data) == 0:
+                if len(parsed_data) == 0:
                     raise ValueError("Parsed JSON is an empty list")
+                elif len(parsed_data) >= 1 and isinstance(parsed_data[0], dict):
+                    # If it's a list containing dict(s), take the first element
+                    if len(parsed_data) > 1:
+                        logger.warning(f"Parsed JSON is a list with {len(parsed_data)} elements, taking the first element")
+                    else:
+                        logger.info("Unwrapping single-element list to dict")
+                    parsed_data = parsed_data[0]
                 else:
-                    raise ValueError(f"Parsed JSON is a list with {len(parsed_data)} elements, expected a dictionary")
+                    raise ValueError(f"Parsed JSON is a list with {len(parsed_data)} elements, but first element is not a dictionary")
 
             if isinstance(parsed_data, dict):
                 if parsed_data.get('action_type'):

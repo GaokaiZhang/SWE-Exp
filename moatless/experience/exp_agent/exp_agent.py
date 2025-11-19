@@ -2,7 +2,11 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")))
 from dotenv import load_dotenv
-load_dotenv(".env")
+
+# Load .env from the project root directory
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
+env_path = os.path.join(project_root, ".env")
+load_dotenv(env_path)
 
 import re
 import logging
@@ -363,7 +367,12 @@ def get_failed_rollout(tree, with_code=False):
 
 
 if __name__ == '__main__':
-    completion_model = CompletionModel(model="deepseek/deepseek-chat", temperature=0.7)
+    # Get API key from environment
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not found in environment. Please check .env file.")
+
+    completion_model = CompletionModel(model="claude-sonnet-4-20250514", temperature=0.7, model_api_key=api_key)
     perspective_agent = ExpAgent(success_per_system_prompt=encode_success_perspective_system_prompt,
                                  failed_per_system_prompt=encode_failed_perspective_system_prompt,
                                  success_mod_system_prompt=encode_success_modify_system_prompt,

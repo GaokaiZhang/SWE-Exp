@@ -95,8 +95,13 @@ def extract_issue_types_batch(start_idx=0, end_idx=None, resume_from_file=None):
         end_idx = len(ids)
     
     ids_to_process = ids[start_idx:end_idx]
-    
-    completion_model = CompletionModel(model="deepseek/deepseek-chat", temperature=0.7)
+
+    # Get API key from environment
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not found in environment. Please check .env file.")
+
+    completion_model = CompletionModel(model="claude-sonnet-4-20250514", temperature=0.7, model_api_key=api_key)
     issue_agent = IssueAgent(system_prompt=issue_type_system_prompt, user_prompt=issue_type_user_prompt, completion=completion_model)
 
     issue_type_verified = {}

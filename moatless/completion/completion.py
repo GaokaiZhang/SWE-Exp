@@ -206,10 +206,12 @@ class CompletionModel(BaseModel):
                     ].message.content.model_dump()
                 else:
                     assistant_message = completion_response.choices[0].message.content
-        
+
                 if not assistant_message:
-                    raise CompletionRuntimeError("Empty response from model")
-        
+                    # Treat empty responses like validation errors - add to messages first
+                    messages.append({"role": "assistant", "content": ""})
+                    raise ValueError("Empty response from model. Please provide a valid response with the required JSON format.")
+
                 messages.append({"role": "assistant", "content": assistant_message})
         
                 response = response_model.model_validate_json(assistant_message)
@@ -226,7 +228,7 @@ class CompletionModel(BaseModel):
         
                 return CompletionResponse.create(output=response, completion=completion)
 
-            except (ValidationError, json.JSONDecodeError) as e:
+            except (ValidationError, json.JSONDecodeError, ValueError) as e:
                 logger.warning(
                     f"Completion attempt failed with error: {e}. Will retry."
                 )

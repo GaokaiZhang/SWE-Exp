@@ -1,10 +1,16 @@
 from dotenv import load_dotenv
-load_dotenv(".env")
 import os
+
+# Load .env from the script's directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+env_path = os.path.join(script_dir, ".env")
+load_dotenv(env_path)
 import json
 import random
 import argparse
 import logging
+import signal
+import multiprocessing
 from datetime import datetime
 from typing import Dict
 
@@ -39,6 +45,9 @@ from moatless.experience.prompts.exp_prompts import select_exp_system_prompt, se
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Timeout configuration (10 minutes = 600 seconds)
+INSTANCE_TIMEOUT = 600
+
 
 def load_jsonl(file_path):
     data_list = []
@@ -70,11 +79,26 @@ def add_data_to_jsonl(file_path, new_data):
     save_to_jsonl(data_list, file_path)
 
 
+def run_instance_with_timeout(instance_id, max_iterations, max_finish_nodes, max_expansions, flag):
+    """Wrapper to run a single instance with timeout using multiprocessing"""
+    try:
+        main(instance_id, max_iterations, max_finish_nodes, max_expansions, flag)
+        return True
+    except Exception as e:
+        logger.error(f"Instance {instance_id} failed with error: {e}")
+        return False
+
+
 def main(instance_id, max_iterations, max_finish_nodes, max_expansions, flag):
-    # Using Claude Sonnet 4.5
-    completion_model = CompletionModel(model="claude-sonnet-4-5-20250929", temperature=0.7)
-    discriminator_model = CompletionModel(model="claude-sonnet-4-5-20250929", temperature=1)
-    value_model = CompletionModel(model="claude-sonnet-4-5-20250929", temperature=0.2)
+    # Using Claude Sonnet 4
+    # Get API key from environment
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not found in environment. Please check .env file.")
+
+    completion_model = CompletionModel(model="claude-sonnet-4-20250514", temperature=0.7, model_api_key=api_key)
+    discriminator_model = CompletionModel(model="claude-sonnet-4-20250514", temperature=1, model_api_key=api_key)
+    value_model = CompletionModel(model="claude-sonnet-4-20250514", temperature=0.2, model_api_key=api_key)
 
     # Use JSON mode for better structured output compatibility with Sonnet 4
     completion_model.response_format = LLMResponseFormat.JSON
@@ -153,8 +177,14 @@ def main(instance_id, max_iterations, max_finish_nodes, max_expansions, flag):
         select_agent = None
         old_experiences = None
 
-    finished_node = search_tree.run_search(select_agent, old_experiences)
-    search_tree.persist(persist_path)
+    # Run search without signal-based timeout (will use multiprocessing timeout instead)
+    try:
+        finished_node = search_tree.run_search(select_agent, old_experiences)
+        search_tree.persist(persist_path)
+    except Exception as e:
+        logger.error(f"Instance {instance_id} failed with error: {e}")
+        search_tree.persist(persist_path)
+        raise
 
     if finished_node:
         if finished_node.file_context.generate_git_patch():
@@ -171,6 +201,12 @@ def main(instance_id, max_iterations, max_finish_nodes, max_expansions, flag):
 
 
 if __name__ == '__main__':
+    # Use 'fork' for faster process creation on Linux
+    try:
+        multiprocessing.set_start_method('fork')
+    except RuntimeError:
+        pass  # Already set
+
     parser = argparse.ArgumentParser(description="Process some arguments.")
 
     parser.add_argument("--instance_ids", type=str, required=True,
@@ -194,12 +230,54 @@ if __name__ == '__main__':
     if isinstance(instance_ids, list):
         for instance_id in instance_ids:
             instance_id = instance_id.strip()
-            main(instance_id, args.max_iterations, args.max_finished_nodes, args.max_expansions, args.experience)
+            logger.info(f"Starting instance {instance_id} with {INSTANCE_TIMEOUT}s timeout...")
+
+            # Run instance in a separate process with timeout
+            process = multiprocessing.Process(
+                target=run_instance_with_timeout,
+                args=(instance_id, args.max_iterations, args.max_finished_nodes, args.max_expansions, args.experience)
+            )
+            process.start()
+            process.join(timeout=INSTANCE_TIMEOUT)
+
+            if process.is_alive():
+                # Process is still running after timeout, kill it
+                logger.warning(f"Instance {instance_id} exceeded {INSTANCE_TIMEOUT}s timeout. Terminating...")
+                process.terminate()
+                process.join(timeout=5)  # Wait 5 seconds for graceful termination
+                if process.is_alive():
+                    # Force kill if still alive
+                    logger.warning(f"Instance {instance_id} did not terminate gracefully. Killing...")
+                    process.kill()
+                    process.join()
+                logger.warning(f"Instance {instance_id} skipped due to timeout")
+            else:
+                # Process completed within timeout
+                if process.exitcode == 0:
+                    logger.info(f"Instance {instance_id} completed successfully")
+                else:
+                    logger.warning(f"Instance {instance_id} failed with exit code {process.exitcode}")
+
             import time
             time.sleep(3)
-            logger.info("wait for half minute and then run the next instance")
+            logger.info("Waiting 3 seconds before running next instance...")
     elif isinstance(instance_ids, str):
-        main(instance_ids, args.max_iterations, args.max_finished_nodes, args.max_expansions, args.experience)
-    
+        logger.info(f"Starting single instance {instance_ids} with {INSTANCE_TIMEOUT}s timeout...")
+        process = multiprocessing.Process(
+            target=run_instance_with_timeout,
+            args=(instance_ids, args.max_iterations, args.max_finished_nodes, args.max_expansions, args.experience)
+        )
+        process.start()
+        process.join(timeout=INSTANCE_TIMEOUT)
+
+        if process.is_alive():
+            logger.warning(f"Instance {instance_ids} exceeded {INSTANCE_TIMEOUT}s timeout. Terminating...")
+            process.terminate()
+            process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            logger.warning(f"Instance {instance_ids} skipped due to timeout")
+
 
     logger.info('All Finished')

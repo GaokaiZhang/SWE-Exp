@@ -450,7 +450,12 @@ Output only the following JSON structure:
 
 
 if __name__ == '__main__':
-    completion_model = CompletionModel(model="deepseek/deepseek-chat", temperature=0.7)
+    # Get API key from environment
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not found in environment. Please check .env file.")
+
+    completion_model = CompletionModel(model="claude-sonnet-4-20250514", temperature=0.7, model_api_key=api_key)
     with open("/SWE-Exp/moatless/tmp/verified_dataset_ids.txt", "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
 
