@@ -46,7 +46,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Timeout configuration (10 minutes = 600 seconds)
-INSTANCE_TIMEOUT = 600
+INSTANCE_TIMEOUT = 2400
 
 
 def load_jsonl(file_path):

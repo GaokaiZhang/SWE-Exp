@@ -47,9 +47,27 @@ bash stage1.sh test test_instances.txt
 - `django/test_baseline.jsonl` - 30 test results (baseline)
 - `tmp/trajectory/` - 201 train trajectories only
 
-**If instances fail:**
+**If instances fail or are incomplete:**
+
+The system provides two ways to handle incomplete instances:
+
+**Method 1: Using `rerun_incomplete.sh` (Recommended for train)**
 ```bash
-# Rerun incomplete instances (auto-generated rerun file)
+# Automatically handles cleanup, merging, and retry
+bash rerun_incomplete.sh
+```
+
+This script will:
+- ✓ Compare `train_baseline.jsonl` against `train_instances.txt` (201 expected)
+- ✓ Identify missing instances or instances without patches
+- ✓ Auto-update `instances_to_rerun.txt`
+- ✓ Remove old incomplete trajectories
+- ✓ Retry failed instances
+- ✓ Merge results back into `train_baseline.jsonl`
+
+**Method 2: Using `stage1.sh` (For test instances)**
+```bash
+# Manually specify instances to rerun
 bash stage1.sh train instances_to_rerun_train.txt
 bash stage1.sh test instances_to_rerun_test.txt
 ```
@@ -168,9 +186,35 @@ cat evaluation_results/*/report.json | jq '[.[] | select(.resolved == true) | .i
 ## Troubleshooting
 
 ### Stage 1: Some instances fail to generate patches
+
+**For train instances (recommended):**
 ```bash
-# Auto-retry using generated rerun file
+# Use rerun_incomplete.sh - automatically detects and retries incomplete instances
+bash rerun_incomplete.sh
+```
+
+The script will:
+1. Check `train_baseline.jsonl` against `train_instances.txt` (201 total)
+2. Find instances that are missing or without patches
+3. Update `instances_to_rerun.txt` automatically
+4. Clean up incomplete trajectories
+5. Rerun failed instances
+6. Merge results back
+
+**For manual control or test instances:**
+```bash
+# Manually specify instances to retry
 bash stage1.sh train instances_to_rerun_train.txt
+bash stage1.sh test instances_to_rerun_test.txt
+```
+
+**Increasing timeout for difficult instances:**
+```bash
+# Edit workflow.py to increase timeout (default: 600s = 10 min)
+sed -i 's/INSTANCE_TIMEOUT = 600/INSTANCE_TIMEOUT = 1200/' workflow.py
+
+# Then run rerun script
+bash rerun_incomplete.sh
 ```
 
 ### Stage 2-4: Prerequisites not met
