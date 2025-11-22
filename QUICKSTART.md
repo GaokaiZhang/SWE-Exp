@@ -1,7 +1,7 @@
 # SWE-Exp Quickstart
 
 ## Objective
-Compare 30 test instances solved **without** vs **with** experience learned from 201 train instances.
+Compare 30 test instances solved **without** vs **with** experience learned from 199 train instances.
 
 ## Prerequisites
 
@@ -9,7 +9,8 @@ Compare 30 test instances solved **without** vs **with** experience learned from
 ```
 SWE-Exp/
 ├── .env                    # ANTHROPIC_API_KEY=sk-ant-...
-├── train_instances.txt     # 201 train instance IDs (one per line)
+├── train_instances.txt     # 199 train instance IDs (one per line)
+├── instances_fail.txt      # 2 failed train instance IDs
 └── test_instances.txt      # 30 test instance IDs (one per line)
 ```
 
@@ -30,7 +31,7 @@ echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 Collect baseline trajectories and patches without any prior experience.
 
 ```bash
-# Train (201 instances): Collect trajectories for experience extraction
+# Train (199 instances): Collect trajectories for experience extraction
 bash stage1.sh train train_instances.txt
 
 # Test (30 instances): Collect baseline results for comparison
@@ -43,9 +44,9 @@ bash stage1.sh test test_instances.txt
 - Test: moves trajectories to `tmp/trajectory_test_backup/` to prevent data leakage
 
 **Output:**
-- `django/train_baseline.jsonl` - 201 train results
+- `django/train_baseline.jsonl` - 199 train results
 - `django/test_baseline.jsonl` - 30 test results (baseline)
-- `tmp/trajectory/` - 201 train trajectories only
+- `tmp/trajectory/` - 199 train trajectories only
 
 **If instances fail or are incomplete:**
 
@@ -58,7 +59,7 @@ bash rerun_incomplete.sh
 ```
 
 This script will:
-- ✓ Compare `train_baseline.jsonl` against `train_instances.txt` (201 expected)
+- ✓ Compare `train_baseline.jsonl` against `train_instances.txt` (199 expected)
 - ✓ Identify missing instances or instances without patches
 - ✓ Auto-update `instances_to_rerun.txt`
 - ✓ Remove old incomplete trajectories
@@ -74,19 +75,19 @@ bash stage1.sh test instances_to_rerun_test.txt
 
 ### Stages 2-4: Experience Pipeline (WITH Experience)
 
-Extract experiences from 201 train instances and apply to 30 test instances.
+Extract experiences from 199 train instances and apply to 30 test instances.
 
 ```bash
 bash pipeline.sh
 ```
 
 **What it does:**
-1. **Stage 2**: Extract issue types from 201 train trajectories
-2. **Stage 3**: Build experience tree from 201 train instances
+1. **Stage 2**: Extract issue types from 199 train trajectories
+2. **Stage 3**: Build experience tree from 199 train instances
 3. **Stage 4**: Run 30 test instances WITH experience
 
 **Prerequisites check:**
-- `tmp/trajectory/` must have 201 train trajectories
+- `tmp/trajectory/` must have 199 train trajectories
 - `django/test_baseline.jsonl` must have 30 test results
 
 **Output:**
@@ -117,17 +118,18 @@ bash evaluate.sh django/test_with_experience_20241119_153045.jsonl
 
 ### Input Files
 ```
-├── train_instances.txt              # 201 train IDs
+├── train_instances.txt              # 199 train IDs
+├── instances_fail.txt               # 2 failed train IDs
 └── test_instances.txt               # 30 test IDs
 ```
 
 ### Stage 1 Output (WITHOUT Experience)
 ```
 ├── django/
-│   ├── train_baseline.jsonl         # 201 train results
+│   ├── train_baseline.jsonl         # 199 train results
 │   └── test_baseline.jsonl          # 30 test baseline results
 └── tmp/
-    ├── trajectory/                  # 201 TRAIN trajectories only
+    ├── trajectory/                  # 199 TRAIN trajectories only
     │   ├── django__django-11001/
     │   └── ...
     └── trajectory_test_backup/      # 30 test trajectories (backup)
@@ -161,7 +163,7 @@ bash evaluate.sh django/test_with_experience_20241119_153045.jsonl
 ```bash
 # Check Stage 1 completion status
 wc -l django/train_baseline.jsonl django/test_baseline.jsonl
-ls tmp/trajectory/ | wc -l  # Should be 201 (train only)
+ls tmp/trajectory/ | wc -l  # Should be 199 (train only)
 
 # Check Stage 2-3 output
 ls tmp/het/verified_*.json
@@ -179,7 +181,12 @@ cat evaluation_results/*/report.json | jq '[.[] | select(.resolved == true) | .i
 
 ## Data Split
 
-- **Train (201)**: Older Django instances used to build experience
+- **Train (199)**: Older Django instances used to build experience
+  - Originally 201 instances, but 2 failed to generate patches due to timeouts
+  - Failed instances (recorded in `instances_fail.txt`):
+    - `django__django-13212`
+    - `django__django-13513`
+  - Successfully completed: 199 instances in `train_instances.txt`
 - **Test (30)**: Latest 30 Django instances from SWE-bench_Verified
 - **No overlap**: Test instances are NOT in train set (no data leakage)
 
@@ -194,7 +201,7 @@ bash rerun_incomplete.sh
 ```
 
 The script will:
-1. Check `train_baseline.jsonl` against `train_instances.txt` (201 total)
+1. Check `train_baseline.jsonl` against `train_instances.txt` (199 total)
 2. Find instances that are missing or without patches
 3. Update `instances_to_rerun.txt` automatically
 4. Clean up incomplete trajectories
@@ -220,7 +227,7 @@ bash rerun_incomplete.sh
 ### Stage 2-4: Prerequisites not met
 ```bash
 # Check trajectory count
-ls tmp/trajectory/ | wc -l  # Must be 201
+ls tmp/trajectory/ | wc -l  # Must be 199
 
 # Check test baseline exists
 wc -l django/test_baseline.jsonl  # Must be 30
@@ -243,7 +250,7 @@ newgrp docker
 
 ```bash
 # 1. Stage 1: Collect trajectories WITHOUT experience
-bash stage1.sh train train_instances.txt  # → django/train_baseline.jsonl (201)
+bash stage1.sh train train_instances.txt  # → django/train_baseline.jsonl (199)
 bash stage1.sh test test_instances.txt    # → django/test_baseline.jsonl (30)
 
 # 2. Stages 2-4: Extract experience and apply to test

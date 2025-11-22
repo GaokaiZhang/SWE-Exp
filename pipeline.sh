@@ -3,13 +3,13 @@
 # EXPERIENCE PIPELINE - STAGES 2-4
 #
 # Prerequisites: Stage 1 must be completed for all instances
-#   - Train: 201 instances with trajectories in tmp/trajectory/
-#   - Test: 30 instances with baseline results in django/test_baseline_final.jsonl
+#   - Train: 199 instances with trajectories in tmp/trajectory/
+#   - Test: 30 instances with baseline results in django/test_baseline.jsonl
 #
 # This script:
-#   1. Stage 2: Extract issue types from 201 train trajectories
-#   2. Stage 3: Build experience tree from 201 train trajectories
-#   3. Stage 4: Test 30 instances WITH experience (from 201 train)
+#   1. Stage 2: Extract issue types from 199 train trajectories
+#   2. Stage 3: Build experience tree from 199 train trajectories
+#   3. Stage 4: Test 30 instances WITH experience (from 199 train)
 ################################################################################
 
 set -e
@@ -73,11 +73,11 @@ TEST_BASELINE_FILE="django/test_baseline.jsonl"
 TEST_BASELINE_COUNT=$(wc -l < "$TEST_BASELINE_FILE" 2>/dev/null || echo "0")
 
 log_info "Prerequisites check:"
-log_info "  Train trajectories: ${TRAIN_TRAJECTORY_COUNT}/201"
+log_info "  Train trajectories: ${TRAIN_TRAJECTORY_COUNT}/199"
 log_info "  Test baseline: ${TEST_BASELINE_COUNT}/30 ($TEST_BASELINE_FILE)"
 
-if [ ${TRAIN_TRAJECTORY_COUNT} -lt 201 ]; then
-    log_error "Missing train trajectories! Expected 201, found ${TRAIN_TRAJECTORY_COUNT}"
+if [ ${TRAIN_TRAJECTORY_COUNT} -lt 199 ]; then
+    log_error "Missing train trajectories! Expected 199, found ${TRAIN_TRAJECTORY_COUNT}"
     log_error "Please run: bash stage1.sh train train_instances.txt"
     exit 1
 fi
@@ -97,17 +97,30 @@ export PYTHONPATH=/home/gaokaizhang/SWE-Exp
 echo ""
 
 ################################################################################
-# STAGE 2: EXTRACT ISSUE TYPES FROM 201 TRAIN INSTANCES
+# STAGE 2: EXTRACT ISSUE TYPES FROM 199 TRAIN INSTANCES
 ################################################################################
 
 log_info "========================================================================"
-log_info "STAGE 2: Extract Issue Types from 201 Train Instances"
+log_info "STAGE 2: Extract Issue Types from 199 Train Instances"
 log_info "========================================================================"
 
 log_info "Extracting issue types from trajectories in tmp/trajectory/..."
 
 python moatless/experience/exp_agent/extract_verified_issue_types_batch.py \
     2>&1 | tee "$LOG_DIR/stage2_extract_issue_types.log"
+
+# Merge batch files
+log_info "Merging batch issue type files..."
+python moatless/experience/exp_agent/extract_verified_issue_types_batch.py \
+    --merge \
+    2>&1 | tee -a "$LOG_DIR/stage2_extract_issue_types.log"
+
+# Rename merged file to final and copy to tmp/het/
+if [ -f "tmp/verified_issue_types_merged.json" ]; then
+    cp tmp/verified_issue_types_merged.json tmp/verified_issue_types_final.json
+    cp tmp/verified_issue_types_final.json tmp/het/verified_issue_types_final.json
+    log_info "Copied issue types to tmp/het/ for workflow.py"
+fi
 
 if [ $? -eq 0 ] && [ -f "tmp/het/verified_issue_types_final.json" ]; then
     ISSUE_COUNT=$(python -c "import json; print(len(json.load(open('tmp/het/verified_issue_types_final.json'))))" 2>/dev/null || echo "0")
@@ -122,17 +135,23 @@ fi
 echo ""
 
 ################################################################################
-# STAGE 3: BUILD EXPERIENCE TREE FROM 201 TRAIN INSTANCES
+# STAGE 3: BUILD EXPERIENCE TREE FROM 199 TRAIN INSTANCES
 ################################################################################
 
 log_info "========================================================================"
-log_info "STAGE 3: Build Experience Tree from 201 Train Instances"
+log_info "STAGE 3: Build Experience Tree from 199 Train Instances"
 log_info "========================================================================"
 
-log_info "Mining experiences from 201 train trajectories..."
+log_info "Mining experiences from 199 train trajectories..."
 
 python moatless/experience/exp_agent/exp_agent.py \
     2>&1 | tee "$LOG_DIR/stage3_build_experience.log"
+
+# Copy experience tree to tmp/het/ for workflow.py
+if [ -f "tmp/verified_experience_tree.json" ]; then
+    cp tmp/verified_experience_tree.json tmp/het/verified_experience_tree.json
+    log_info "Copied experience tree to tmp/het/ for workflow.py"
+fi
 
 if [ $? -eq 0 ] && [ -f "tmp/het/verified_experience_tree.json" ]; then
     EXP_COUNT=$(python -c "import json; data=json.load(open('tmp/het/verified_experience_tree.json')); print(len(data))" 2>/dev/null || echo "0")
@@ -147,11 +166,11 @@ fi
 echo ""
 
 ################################################################################
-# STAGE 4: TEST 30 INSTANCES WITH EXPERIENCE (FROM 201 TRAIN)
+# STAGE 4: TEST 30 INSTANCES WITH EXPERIENCE (FROM 199 TRAIN)
 ################################################################################
 
 log_info "========================================================================"
-log_info "STAGE 4: Test 30 Instances WITH Experience (from 201 train)"
+log_info "STAGE 4: Test 30 Instances WITH Experience (from 199 train)"
 log_info "========================================================================"
 
 # Verify experience database
@@ -160,7 +179,7 @@ if [ ! -f "tmp/het/verified_experience_tree.json" ]; then
     exit 1
 fi
 
-log_success "Experience database ready (from 201 train instances)"
+log_success "Experience database ready (from 199 train instances)"
 log_info "Running 30 test instances WITH experience..."
 
 # Clear prediction file
@@ -200,8 +219,8 @@ log_success "===================================================================
 echo ""
 
 log_info "EXECUTION SUMMARY:"
-log_info "  Stage 2: Issue type extraction (201 train) - COMPLETED"
-log_info "  Stage 3: Experience tree building (201 train) - COMPLETED"
+log_info "  Stage 2: Issue type extraction (199 train) - COMPLETED"
+log_info "  Stage 3: Experience tree building (199 train) - COMPLETED"
 log_info "  Stage 4: Test WITH experience (30 test) - COMPLETED"
 echo ""
 

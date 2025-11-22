@@ -456,11 +456,11 @@ if __name__ == '__main__':
         raise ValueError("ANTHROPIC_API_KEY not found in environment. Please check .env file.")
 
     completion_model = CompletionModel(model="claude-sonnet-4-20250514", temperature=0.7, model_api_key=api_key)
-    with open("/SWE-Exp/moatless/tmp/verified_dataset_ids.txt", "r", encoding="utf-8") as f:
+    with open("verified_dataset_ids.txt", "r", encoding="utf-8") as f:
         lines = [line.strip() for line in f if line.strip()]
 
-    issue_type = get_json('/SWE-Exp/moatless/tmp/het/split_train_issue_type.json')
-    counter = 0 
+    issue_type = get_json('tmp/het/split_train_issue_type.json')
+    counter = 0
     for line in lines:
         counter += 1
         if counter % 30 == 0:
@@ -468,10 +468,10 @@ if __name__ == '__main__':
             instance_id = line.strip()
             select_agent = SelectAgent(completion=completion_model, instance_id=instance_id,
                                     select_system_prompt=select_exp_system_prompt,
-                                    user_prompt=select_exp_user_prompt, 
-                                    exp_path='SWE-Exp/moatless/tmp/het/verified_experience_tree.json', 
-                                    train_issue_type_path='SWE-Exp/moatless/tmp/het/verified_issue_types_final.json', 
-                                    test_issue_type_path='SWE-Exp/moatless/tmp/het/verified_issue_types_final.json', 
+                                    user_prompt=select_exp_user_prompt,
+                                    exp_path='tmp/het/verified_experience_tree.json',
+                                    train_issue_type_path='tmp/het/verified_issue_types_final.json',
+                                    test_issue_type_path='tmp/het/verified_issue_types_final.json',
                                     persist_dir='')
             old_experiences = select_agent.select_workflow(n=5)
 

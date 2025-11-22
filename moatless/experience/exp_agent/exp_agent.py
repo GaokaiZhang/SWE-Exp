@@ -68,7 +68,7 @@ def find_latest_trajectory(base_dir, instance_id):
         return None
 
 def find_trajectory(instance_id):
-    base_dir = "SWE-Exp/tmp/trajectory"
+    base_dir = "tmp/trajectory"
     return find_latest_trajectory(base_dir, instance_id)
 
 
@@ -376,13 +376,13 @@ if __name__ == '__main__':
     perspective_agent = ExpAgent(success_per_system_prompt=encode_success_perspective_system_prompt,
                                  failed_per_system_prompt=encode_failed_perspective_system_prompt,
                                  success_mod_system_prompt=encode_success_modify_system_prompt,
-                                 issue_type_path='SWE-Exp/tmp/verified_issue_types_final.json',
+                                 issue_type_path='tmp/verified_issue_types_final.json',
                                  completion=completion_model)
 
-    with open("SWE-Exp/verified_dataset_ids.txt", "r", encoding="utf-8") as f:
+    with open("verified_dataset_ids.txt", "r", encoding="utf-8") as f:
         ids = f.readlines()
-    
-    eval_path = 'SWE-Exp/tmp/merged_leaf_analysis_with_trajectories.jsonl'
+
+    eval_path = 'tmp/merged_leaf_analysis_with_trajectories.jsonl'
 
     exp_tree = {}
     for instance_id in tqdm(ids):
@@ -426,4 +426,4 @@ if __name__ == '__main__':
         print(json.dumps(exp_tree[instance_id][0], indent=4))
         exp_tree[instance_id][0]['issue'] = issue
         print('-' * 100)
-        save2json(exp_tree, 'SWE-Exp/tmp/verified_experience_tree.json')
+        save2json(exp_tree, 'tmp/verified_experience_tree.json')

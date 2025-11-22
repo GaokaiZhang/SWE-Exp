@@ -87,8 +87,8 @@ class IssueAgent(BaseModel):
 
 
 def extract_issue_types_batch(start_idx=0, end_idx=None, resume_from_file=None):
-    
-    with open("SWE-Exp/verified_dataset_ids.txt", "r", encoding="utf-8") as f:
+
+    with open("verified_dataset_ids.txt", "r", encoding="utf-8") as f:
         ids = [line.strip() for line in f.readlines() if line.strip()]
 
     if end_idx is None:
@@ -149,7 +149,7 @@ def extract_issue_types_batch(start_idx=0, end_idx=None, resume_from_file=None):
     return issue_type_verified
 
 def save_batch_results(results, start_idx, end_idx):
-    filename = f"SWE-Exp/tmp/verified_issue_types_batch_{start_idx}_{end_idx}.json"
+    filename = f"tmp/verified_issue_types_batch_{start_idx}_{end_idx}.json"
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(results, f, ensure_ascii=False, indent=4)
     print(f"Saved batch results to: {filename}")
@@ -157,22 +157,22 @@ def save_batch_results(results, start_idx, end_idx):
 def merge_batch_files():
     import glob
     import os
-    
-    pattern = "SWE-Exp/tmp/verified_issue_types_batch_*.json"
+
+    pattern = "tmp/verified_issue_types_batch_*.json"
     batch_files = glob.glob(pattern)
-    
+
     merged_results = {}
     for batch_file in sorted(batch_files):
         print(f"Merging file: {batch_file}")
         with open(batch_file, 'r', encoding='utf-8') as f:
             batch_data = json.load(f)
             merged_results.update(batch_data)
-    
-    merged_filename = "SWE-Exp/tmp/verified_issue_types_merged.json"
+
+    merged_filename = "tmp/verified_issue_types_merged.json"
     with open(merged_filename, 'w', encoding='utf-8') as f:
         json.dump(merged_results, f, ensure_ascii=False, indent=4)
-    
-    print(f"Merged {len(merged_results)} instances, saved to: {merged_filename}")    
+
+    print(f"Merged {len(merged_results)} instances, saved to: {merged_filename}")
     return merged_results
 
 
