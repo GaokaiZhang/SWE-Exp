@@ -319,25 +319,47 @@ Your output must strictly follow the JSON format below:
 
         instance = get_moatless_instance(instance_id=self.instance_id)
         cur_issue = instance['problem_statement']
-        # Filter out instances in the same repository
-        issue_type_tmp = {}
-        repo = self.instance_id.split('__')[0]
-        for k, v in train_issue_type.items():
-            if repo not in k:
-                issue_type_tmp[k] = v
+
+        # Use explicit train/test split instead of repo filtering
+        # train_issue_type contains ONLY train instances (199)
+        # test_issue_type contains ONLY test instances (30)
+        # No filtering needed - use ALL train instances for each test instance
+        issue_type_tmp = train_issue_type
+
+        logger.info(f"Searching {len(issue_type_tmp)} train experiences for test instance {self.instance_id}")
+
         id2score, topkids = self.screening(pre_issues=issue_type_tmp, cur_issue={self.instance_id: test_issue_type[self.instance_id]})
         select_issues = {}
         for i in topkids:
             select_issues[i] = exp_tree[i][0]
         answer = self.select_perspective(pre_issues=select_issues, cur_issue=cur_issue, k=n)
         logger.info(f'answer:\n{json.dumps(answer, indent=4)}')
+
+        # Handle case where LLM returns a list instead of dict
+        if isinstance(answer, list):
+            # Find the first dict in the list
+            for item in answer:
+                if isinstance(item, dict) and item:
+                    answer = item
+                    break
+            else:
+                # If no valid dict found, return empty dict
+                logger.warning(f"Could not extract valid dict from list answer: {answer}")
+                return {}
+
+        # Ensure answer is a dict before calling .items()
+        if not isinstance(answer, dict):
+            logger.warning(f"Answer is not a dict or list, got type {type(answer)}: {answer}")
+            return {}
+
         return {k: exp_tree[k][0] for k, v in answer.items()}
 
 
 
     def polish_workflow(self, old_experiences: Dict, type, history, instruction):
-        issue_type = self.get_json(self.test_issue_type_path)
-        cur_issue = issue_type[self.instance_id]['issue']
+        test_issue_type = self.get_json(self.test_issue_type_path)
+        train_issue_type = self.get_json(self.train_issue_type_path)
+        cur_issue = test_issue_type[self.instance_id]['issue']
         enhance_system_prompt = f'''
 You are a strategic assistant helping an agent improve its next-step instruction in a debugging task.
 
@@ -363,7 +385,7 @@ Output only the following JSON structure:
 '''
         enhanced_instruction = instruction
         for id, exp in old_experiences.items():
-            issue_data = issue_type[id]
+            issue_data = train_issue_type[id]
             experiences = f'***Past Issue***: {issue_data["issue"]}\n'
             if type == 'perspective':
                 experiences += self.load_experience(exp, type)

@@ -117,10 +117,18 @@ class ActionAgent(BaseModel):
                                                                     instruction=None)
                 persist_exp['perspective'] = new_experiences
             else:
-                perspective = het['HET']['1']['perspective']
-                persist_exp['perspective'] = perspective
-                new_experiences += f'{perspective}\n'
-            
+                # Check if HET has cached perspective, otherwise generate new
+                if het and 'HET' in het and '1' in het['HET'] and 'perspective' in het['HET']['1']:
+                    perspective = het['HET']['1']['perspective']
+                    persist_exp['perspective'] = perspective
+                    new_experiences += f'{perspective}\n'
+                else:
+                    # Generate new experiences if not cached
+                    new_experiences += experiencer.generalize_workflow(old_experiences, type='perspective',
+                                                                        history=None, cur_code=None,
+                                                                        instruction=None)
+                    persist_exp['perspective'] = new_experiences
+
             logger.info(f"===The experience is====: {new_experiences}")
         else:
             exp = ''

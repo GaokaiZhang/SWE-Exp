@@ -271,18 +271,21 @@ def get_success_rollout_with_patch(tree, evaluation, with_code=False) -> Tuple[L
     leaves = []
     for leaf in evaluation:
         if isinstance(leaf, dict):
-            if leaf['resolved']:
-                node = tree.get_node_by_id(leaf['leaf'])
-                print(leaf['leaf'])
+            # Handle both 'resolved' field (old format) and absence of it (new format with model_patch means resolved)
+            is_resolved = leaf.get('resolved', True) if 'model_patch' in leaf else False
+            if is_resolved:
+                leaf_id = leaf.get('leaf_id') or leaf.get('leaf')  # Support both 'leaf_id' and 'leaf'
+                node = tree.get_node_by_id(leaf_id)
+                print(leaf_id)
                 print(node.file_context.generate_git_patch())
                 print([i.node_id for i in tree.get_finished_nodes()])
-                if leaf['leaf'] not in [i.node_id for i in tree.get_finished_nodes()]:
-                    raise ValueError(f'leaf {leaf["leaf"]} is not in the finished nodes')
+                if leaf_id not in [i.node_id for i in tree.get_finished_nodes()]:
+                    raise ValueError(f'leaf {leaf_id} is not in the finished nodes')
                 if node and node.is_terminal():
                     rollout = []
                     dfs(node, rollout)
                     rollouts.append(rollout[::-1])
-                    leaves.append(leaf['leaf'])
+                    leaves.append(leaf_id)
     shortest = [min(rollouts, key=len)]
     index = rollouts.index(shortest[0])
     node = tree.get_node_by_id(leaves[index])
@@ -376,7 +379,7 @@ if __name__ == '__main__':
     perspective_agent = ExpAgent(success_per_system_prompt=encode_success_perspective_system_prompt,
                                  failed_per_system_prompt=encode_failed_perspective_system_prompt,
                                  success_mod_system_prompt=encode_success_modify_system_prompt,
-                                 issue_type_path='tmp/verified_issue_types_final.json',
+                                 issue_type_path='tmp/het/train_issue_types.json',
                                  completion=completion_model)
 
     with open("verified_dataset_ids.txt", "r", encoding="utf-8") as f:
@@ -385,45 +388,78 @@ if __name__ == '__main__':
     eval_path = 'tmp/merged_leaf_analysis_with_trajectories.jsonl'
 
     exp_tree = {}
+    failed_instances = []
+    max_retries = 3
+
     for instance_id in tqdm(ids):
         instance_id = instance_id.strip()
-        eval = search_instance(eval_path, instance_id)
-        tree_path = eval[0]['trajectory_path']
-        tree = SearchTree.from_file(tree_path)
-        flag = False
-        exp_tree[instance_id] = []
-        instance = get_moatless_instance(split='verified', instance_id=instance_id)
-        golden_patch = instance['golden_patch']
-        issue = instance['problem_statement']
-        print(generate_ascii_tree(tree.root, tree.get_node_by_id(19)))
-        for i in eval:
-            if i.get('resolved') == True:
-                rollout, patch = get_success_rollout_with_patch(tree, eval, False)
-                trajectory = get_trajectory(rollout)
-                if not trajectory:
-                    raise ValueError(f'trajectory is empty for instance_id: {instance_id}')
-                answer = perspective_agent.encode_perspective(instance_id, rollout=trajectory[0], patch=patch, flag='success')
-                
-                rollout, patch = get_success_rollout_with_patch(tree, eval, True)
-                trajectory = get_trajectory(rollout)
-                if not trajectory:
-                    raise ValueError(f'trajectory is empty for instance_id: {instance_id}')
-                answer2 = perspective_agent.encode_modify(instance_id, rollout=trajectory[0], patch=patch)
-                answer.update(answer2)
-                exp_tree[instance_id].append(answer)
-                exp_tree[instance_id][0]['flag'] = 'success'
-                flag = True
-                break
-        if flag == False:
-            rollout = get_failed_rollout(tree, True)
-            trajectory = get_trajectory(rollout)
-            if not trajectory:
-                raise ValueError(f'trajectory is empty for instance_id: {instance_id}')
-            answer = perspective_agent.encode_perspective(instance_id, rollout=trajectory[0], patch=golden_patch, flag='failed')
-            exp_tree[instance_id].append(answer)
-            exp_tree[instance_id][0]['flag'] = 'failed'
-        
-        print(json.dumps(exp_tree[instance_id][0], indent=4))
-        exp_tree[instance_id][0]['issue'] = issue
-        print('-' * 100)
-        save2json(exp_tree, 'tmp/verified_experience_tree.json')
+        retry_count = 0
+        success = False
+
+        while retry_count < max_retries and not success:
+            try:
+                eval = search_instance(eval_path, instance_id)
+                tree_path = eval[0].get('source_tree_path') or eval[0].get('trajectory_path')
+                tree = SearchTree.from_file(tree_path)
+                flag = False
+                exp_tree[instance_id] = []
+                instance = get_moatless_instance(split='verified', instance_id=instance_id)
+                golden_patch = instance['golden_patch']
+                issue = instance['problem_statement']
+                print(generate_ascii_tree(tree.root, tree.get_node_by_id(19)))
+                for i in eval:
+                    if i.get('resolved') == True:
+                        rollout, patch = get_success_rollout_with_patch(tree, eval, False)
+                        trajectory = get_trajectory(rollout)
+                        if not trajectory:
+                            raise ValueError(f'trajectory is empty for instance_id: {instance_id}')
+                        answer = perspective_agent.encode_perspective(instance_id, rollout=trajectory[0], patch=patch, flag='success')
+
+                        rollout, patch = get_success_rollout_with_patch(tree, eval, True)
+                        trajectory = get_trajectory(rollout)
+                        if not trajectory:
+                            raise ValueError(f'trajectory is empty for instance_id: {instance_id}')
+                        answer2 = perspective_agent.encode_modify(instance_id, rollout=trajectory[0], patch=patch)
+                        answer.update(answer2)
+                        exp_tree[instance_id].append(answer)
+                        exp_tree[instance_id][0]['flag'] = 'success'
+                        flag = True
+                        break
+                if flag == False:
+                    rollout = get_failed_rollout(tree, True)
+                    trajectory = get_trajectory(rollout)
+                    if not trajectory:
+                        raise ValueError(f'trajectory is empty for instance_id: {instance_id}')
+                    answer = perspective_agent.encode_perspective(instance_id, rollout=trajectory[0], patch=golden_patch, flag='failed')
+                    exp_tree[instance_id].append(answer)
+                    exp_tree[instance_id][0]['flag'] = 'failed'
+
+                print(json.dumps(exp_tree[instance_id][0], indent=4))
+                exp_tree[instance_id][0]['issue'] = issue
+                print('-' * 100)
+                save2json(exp_tree, 'tmp/verified_experience_tree.json')
+                success = True
+
+            except Exception as e:
+                retry_count += 1
+                print(f"Error processing instance {instance_id} (attempt {retry_count}/{max_retries}): {str(e)}")
+                if retry_count < max_retries:
+                    print(f"Retrying {instance_id}...")
+                    import time
+                    time.sleep(10)
+                else:
+                    print(f"Failed to process {instance_id} after {max_retries} attempts. Skipping.")
+                    failed_instances.append(instance_id)
+                    # Remove failed instance from exp_tree if partially added
+                    if instance_id in exp_tree:
+                        del exp_tree[instance_id]
+
+    # Print summary at the end
+    print()
+    print("=" * 80)
+    print(f"Experience extraction completed:")
+    print(f"  Successful: {len(exp_tree)}/{len(ids)}")
+    print(f"  Failed: {len(failed_instances)}/{len(ids)}")
+    if failed_instances:
+        print(f"  Failed instances: {failed_instances[:10]}")  # Show first 10
+    print("=" * 80)

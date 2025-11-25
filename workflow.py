@@ -45,8 +45,8 @@ from moatless.experience.prompts.exp_prompts import select_exp_system_prompt, se
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Timeout configuration (10 minutes = 600 seconds)
-INSTANCE_TIMEOUT = 2400
+# Timeout configuration (60 minutes = 3600 seconds)
+INSTANCE_TIMEOUT = 3600
 
 
 def load_jsonl(file_path):
@@ -167,8 +167,8 @@ def main(instance_id, max_iterations, max_finish_nodes, max_expansions, flag):
                                 select_system_prompt=select_exp_system_prompt,
                                 user_prompt=select_exp_user_prompt,
                                 exp_path='tmp/het/verified_experience_tree.json',
-                                train_issue_type_path='tmp/het/verified_issue_types_final.json',
-                                test_issue_type_path='tmp/het/verified_issue_types_final.json',
+                                train_issue_type_path='tmp/het/train_issue_types.json',
+                                test_issue_type_path='tmp/het/test_issue_types.json',
                                 persist_dir=experience_path)
         old_experiences = select_agent.select_workflow(n=1)
         logger.info(f"old_experiences:\n{json.dumps(old_experiences, indent=4)}")
