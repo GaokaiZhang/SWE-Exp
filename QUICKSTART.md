@@ -46,7 +46,8 @@ bash stage1.sh test test_instances.txt
 **Output:**
 - `django/train_baseline.jsonl` - 199 train results
 - `django/test_baseline.jsonl` - 30 test results (baseline)
-- `tmp/trajectory/` - 199 train trajectories only
+- `tmp/trajectory/` - 199 train trajectories only (pipeline will move any test trajectories out)
+- `tmp/trajectory_test_backup/` - Backup location for test trajectories
 
 **If instances fail or are incomplete:**
 
@@ -73,7 +74,7 @@ bash stage1.sh train instances_to_rerun_train.txt
 bash stage1.sh test instances_to_rerun_test.txt
 ```
 
-### Stages 1.5-4: Experience Pipeline (WITH Experience)
+### Stages 1.5-5: Experience Pipeline (WITH Experience)
 
 After Stage 1 completes (trajectories collected), run the experience pipeline.
 
@@ -84,18 +85,17 @@ bash pipeline.sh
 **What it does:**
 1. **Stage 1.5**: Evaluate train patches with Docker (~50 hours)
    - **Default: ENABLED** - Gets correct SUCCESS/FAILURE labels for all 199 training instances
-   - Runs Docker evaluation to determine which training patches actually pass tests
-   - **IMPORTANT**: Must run BEFORE experience extraction to get correct labels
-   - See "Understanding Training Evaluation" section below for details
-   - To skip (saves 50 hours but uses failure-only experiences): Comment out Stage 1.5 block
+   - Runs SWE-bench harness to determine which training patches actually pass tests
+   - **IMPORTANT**: Must run BEFORE experience extraction to get correct labels (pipeline enforces this)
 2. **Stage 2**: Extract issue types from 199 train trajectories
 3. **Stage 3**: Build experience tree from 199 train instances (with 3x retry)
    - Uses `tmp/merged_leaf_analysis_with_trajectories.jsonl` (prepared in Stage 1.5)
    - Retries failed extractions up to 3 times per instance
 4. **Stage 3.5**: Extract issue types from 30 test instances
-   - Enables test instances to query experience database
+   - Enables test instances to query the train-only experience database
    - Verifies no data leakage (test ∩ experience tree = ∅)
 5. **Stage 4**: Run 30 test instances WITH experience
+6. **Stage 5**: Evaluate test patches (baseline + with-experience) via `evaluate.sh`
 
 **Prerequisites check:**
 - `tmp/trajectory/` must have 199 train trajectories
@@ -106,6 +106,8 @@ bash pipeline.sh
 - `tmp/het/test_issue_types.json` - Test issue classifications (30)
 - `tmp/het/verified_experience_tree.json` - Experience database (train only)
 - `django/test_with_experience_TIMESTAMP.jsonl` - Test results WITH experience
+- `evaluation_results/eval_test_baseline_*/report.json` - Baseline Docker evaluation
+- `evaluation_results/eval_test_with_experience_*/report.json` - With-experience Docker evaluation
 
 ### Stage 5: Evaluation
 
@@ -403,26 +405,20 @@ To compare 30 test instances WITHOUT vs WITH experience:
 # - django/test_baseline.jsonl (30 test instances WITHOUT experience)
 # - tmp/trajectory/ (199 train trajectories)
 
-# Step 1: Run experience pipeline (Stages 2-4)
+# Step 1: Run experience pipeline (Stages 1.5-5)
 bash pipeline.sh
 # This will:
 # - Extract experiences from 199 train instances
-# - Apply experiences to 30 test instances
-# - Output: django/test_with_experience_TIMESTAMP.jsonl
-
-# Step 2: Evaluate WITHOUT experience (baseline)
-bash evaluate.sh django/test_baseline.jsonl
-
-# Step 3: Evaluate WITH experience
-bash evaluate.sh django/test_with_experience_20241119_*.jsonl  # Use actual timestamp
-
-# Step 4: Compare results
-# Check evaluation_results/*/report.json
-cat evaluation_results/eval_test_baseline_*/report.json | \
-  jq '[.[] | select(.resolved == true)] | length'
-
-cat evaluation_results/eval_test_with_experience_*/report.json | \
-  jq '[.[] | select(.resolved == true)] | length'
+# - Extract issue types for 30 test instances (Stage 3.5)
+# - Apply experiences to 30 test instances (Stage 4)
+# - Evaluate baseline + with-experience patches (Stage 5)
+# - Output: django/test_with_experience_TIMESTAMP.jsonl and evaluation_results/*
 ```
 
-**Summary:** After Stage 1, you only need to run `pipeline.sh` + two `evaluate.sh` commands for the comparison.
+**Summary:** After Stage 1, running `pipeline.sh` completes Stages 1.5–5 and produces both patch files and evaluation reports.
+
+## Experience Source, Format, and Usage (Brief)
+
+- **Source:** Experiences are mined from the 199 train trajectories after Docker evaluation in Stage 1.5. Each train instance is labeled `resolved=True/False`; successes yield “success” experiences, failures yield “failed” reflections.
+- **Format:** Stored in `tmp/verified_experience_tree.json` (copied to `tmp/het/`). Keys are train instance IDs; each value includes fields like `perspective`, `positioning`, `modification`, and a `flag` of `success` or `failed`.
+- **Usage:** During Stage 4, `workflow.py` loads `tmp/het/verified_experience_tree.json` plus test issue types. `SelectAgent` retrieves the most relevant train experience, generalizes it to the current test issue, and injects the guidance into the agent prompt (`***Experience 1***: ...`). Modification steps also get enhanced instructions based on the selected experience.

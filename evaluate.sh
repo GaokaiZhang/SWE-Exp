@@ -68,10 +68,37 @@ log_error() {
 DATASET_NAME="princeton-nlp/SWE-bench_Verified"
 MAX_WORKERS=4
 TIMEOUT=900  # 15 minutes per instance
+SPLIT="test"
 
 # Extract run ID from filename
 FILENAME=$(basename "$PREDICTION_FILE" .jsonl)
 RUN_ID="eval_${FILENAME}_$(date +%Y%m%d_%H%M%S)"
+
+# Collect instance IDs from prediction file to scope evaluation to provided rows
+INSTANCE_IDS=$(python - <<'PY' "$PREDICTION_FILE"
+import json, sys
+path = sys.argv[1]
+ids = []
+with open(path) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            inst = data.get("instance_id")
+            if inst:
+                ids.append(inst)
+        except json.JSONDecodeError:
+            continue
+print(" ".join(ids))
+PY
+)
+
+if [ -z "$INSTANCE_IDS" ]; then
+    log_error "No instance_id entries found in $PREDICTION_FILE"
+    exit 1
+fi
 
 INSTANCE_COUNT=$(wc -l < "$PREDICTION_FILE")
 ESTIMATED_HOURS=$((INSTANCE_COUNT * 15 / 60))
@@ -116,10 +143,14 @@ log_info "======================================================================
 log_info "Run ID: $RUN_ID"
 log_info "Workers: $MAX_WORKERS"
 log_info "Timeout per instance: ${TIMEOUT}s"
+log_info "Dataset: $DATASET_NAME (split=$SPLIT)"
+log_info "Scoping to instances from prediction file"
 echo ""
 
 python -m swebench.harness.run_evaluation \
     --dataset_name "$DATASET_NAME" \
+    --split "$SPLIT" \
+    --instance_ids $INSTANCE_IDS \
     --predictions_path "$PREDICTION_FILE" \
     --max_workers $MAX_WORKERS \
     --timeout $TIMEOUT \
@@ -127,6 +158,41 @@ python -m swebench.harness.run_evaluation \
 
 if [ $? -eq 0 ]; then
     log_success "Evaluation completed successfully"
+    log_info "Building consolidated report..."
+
+    python - <<'PY' "$RUN_ID"
+import json, glob, os, sys
+from pathlib import Path
+
+run_id = sys.argv[1]
+log_root = Path("logs/run_evaluation") / run_id
+per_instance = glob.glob(str(log_root / "*" / "*" / "report.json"))
+if not per_instance:
+    print(f"[WARNING] No per-instance reports found under {log_root}", flush=True)
+    sys.exit(0)
+
+results = []
+for path in per_instance:
+    data = json.load(open(path))
+    if len(data) != 1:
+        continue
+    inst_id, entry = next(iter(data.items()))
+    results.append({
+        "instance_id": inst_id,
+        "resolved": entry.get("resolved", False),
+        "patch_successfully_applied": entry.get("patch_successfully_applied"),
+        "patch_exists": entry.get("patch_exists"),
+        "patch_is_None": entry.get("patch_is_None"),
+        "tests_status": entry.get("tests_status"),
+    })
+
+out_dir = Path("evaluation_results") / run_id
+out_dir.mkdir(parents=True, exist_ok=True)
+out_path = out_dir / "report.json"
+json.dump(results, open(out_path, "w"), indent=2)
+print(f"[INFO] Consolidated report written to {out_path}")
+PY
+
     log_info "Results saved to: evaluation_results/${RUN_ID}/"
     echo ""
 

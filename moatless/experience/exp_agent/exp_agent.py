@@ -100,10 +100,7 @@ def search_instance(file_path, instance_id):
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return result
     else:
-        print(f"No matched result for instance_id: {instance_id}")
-        trajectory = find_trajectory(instance_id)
-        print(f'Found trajectory path: {trajectory}')
-        return [{'trajectory_path': trajectory}]
+        raise ValueError(f"No matched result for instance_id: {instance_id} in {file_path}")
 
 
 class ExpAgent(BaseModel):
@@ -275,7 +272,11 @@ def get_success_rollout_with_patch(tree, evaluation, with_code=False) -> Tuple[L
             is_resolved = leaf.get('resolved', True) if 'model_patch' in leaf else False
             if is_resolved:
                 leaf_id = leaf.get('leaf_id') or leaf.get('leaf')  # Support both 'leaf_id' and 'leaf'
+                if not leaf_id:
+                    raise ValueError(f'leaf_id missing for instance_id: {leaf.get("instance_id")}')
                 node = tree.get_node_by_id(leaf_id)
+                if not node:
+                    raise ValueError(f'Node not found for leaf_id {leaf_id}')
                 print(leaf_id)
                 print(node.file_context.generate_git_patch())
                 print([i.node_id for i in tree.get_finished_nodes()])
@@ -419,7 +420,23 @@ if __name__ == '__main__':
                         trajectory = get_trajectory(rollout)
                         if not trajectory:
                             raise ValueError(f'trajectory is empty for instance_id: {instance_id}')
-                        answer2 = perspective_agent.encode_modify(instance_id, rollout=trajectory[0], patch=patch)
+
+                        # Ensure modification block is present; retry up to 3 times, then fall back to empty list
+                        mod_attempts = 0
+                        max_mod_attempts = 3
+                        answer2 = None
+                        while mod_attempts < max_mod_attempts:
+                            answer2 = perspective_agent.encode_modify(instance_id, rollout=trajectory[0], patch=patch)
+                            mod_attempts += 1
+                            mod = answer2.get("modification") if isinstance(answer2, dict) else None
+                            mod_ok = isinstance(mod, dict) and isinstance(mod.get("experience"), list)
+                            if mod_ok:
+                                break
+                            if mod_attempts < max_mod_attempts:
+                                print(f"Modification missing for {instance_id}, retrying ({mod_attempts}/{max_mod_attempts})...")
+                        if not (isinstance(answer2, dict) and "modification" in answer2 and isinstance(answer2["modification"].get("experience", None), list)):
+                            answer2 = {"modification": {"experience": []}}
+
                         answer.update(answer2)
                         exp_tree[instance_id].append(answer)
                         exp_tree[instance_id][0]['flag'] = 'success'

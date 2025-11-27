@@ -69,7 +69,29 @@ if [ $? -ne 0 ]; then
 fi
 log_success "ANTHROPIC_API_KEY verified"
 
-# Verify prerequisites
+################################################################################
+# STAGE 1: TRAJECTORY COLLECTION (TRAIN & TEST) FOR FAIR COMPARISON
+################################################################################
+
+log_info "========================================================================"
+log_info "STAGE 1: Collect Train Trajectories (WITHOUT experience)"
+log_info "========================================================================"
+bash stage1.sh train train_instances.txt 2>&1 | tee "$LOG_DIR/stage1_train.log"
+if [ $? -ne 0 ]; then
+    log_error "Stage 1 train run failed"
+    exit 1
+fi
+
+log_info "========================================================================"
+log_info "STAGE 1: Collect Test Trajectories (WITHOUT experience)"
+log_info "========================================================================"
+bash stage1.sh test test_instances.txt 2>&1 | tee "$LOG_DIR/stage1_test.log"
+if [ $? -ne 0 ]; then
+    log_error "Stage 1 test run failed"
+    exit 1
+fi
+
+# Verify prerequisites (after stage1 runs)
 TRAIN_TRAJECTORY_COUNT=$(ls tmp/trajectory/ 2>/dev/null | wc -l)
 TEST_BASELINE_FILE="django/test_baseline.jsonl"
 TEST_BASELINE_COUNT=$(wc -l < "$TEST_BASELINE_FILE" 2>/dev/null || echo "0")
@@ -80,17 +102,52 @@ log_info "  Test baseline: ${TEST_BASELINE_COUNT}/30 ($TEST_BASELINE_FILE)"
 
 if [ ${TRAIN_TRAJECTORY_COUNT} -lt 199 ]; then
     log_error "Missing train trajectories! Expected 199, found ${TRAIN_TRAJECTORY_COUNT}"
-    log_error "Please run: bash stage1.sh train train_instances.txt"
     exit 1
 fi
 
 if [ ${TEST_BASELINE_COUNT} -ne 30 ]; then
     log_error "Missing test baseline! Expected 30, found ${TEST_BASELINE_COUNT}"
-    log_error "Please run: bash stage1.sh test test_instances.txt"
     exit 1
 fi
 
 log_success "All prerequisites met"
+
+# Ensure tmp/trajectory only contains TRAIN trajectories (move any test runs to backup)
+log_info "Ensuring tmp/trajectory contains train trajectories only..."
+python << 'PYEOF' 2>/dev/null
+import os
+import shutil
+
+train_ids = set(line.strip() for line in open('train_instances.txt') if line.strip())
+test_ids = set(line.strip() for line in open('test_instances.txt') if line.strip())
+traj_root = 'tmp/trajectory'
+backup_root = 'tmp/trajectory_test_backup'
+
+if not os.path.isdir(traj_root):
+    print("  WARNING: tmp/trajectory does not exist")
+else:
+    moved = 0
+    unexpected = []
+    for name in os.listdir(traj_root):
+        src = os.path.join(traj_root, name)
+        if not os.path.isdir(src):
+            continue
+        if name in test_ids:
+            os.makedirs(backup_root, exist_ok=True)
+            dst = os.path.join(backup_root, name)
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.move(src, dst)
+            moved += 1
+        elif name not in train_ids:
+            unexpected.append(name)
+
+    print(f"  Moved {moved} test trajectories to {backup_root}")
+    if unexpected:
+        extra = f" ... (+{len(unexpected)-5} more)" if len(unexpected) > 5 else ""
+        print(f"  WARNING: Unexpected trajectories found: {', '.join(unexpected[:5])}{extra}")
+PYEOF
+log_success "Trajectory directory sanitized"
 
 # Create directories
 mkdir -p tmp/het
@@ -145,29 +202,92 @@ log_info "Evaluating django/train_baseline.jsonl with Docker..."
 bash evaluate.sh django/train_baseline.jsonl 2>&1 | tee "$LOG_DIR/stage1.5_evaluate_train.log"
 
 if [ $? -eq 0 ]; then
-    # Find the evaluation results directory
+    # Find or build the evaluation results directory
     EVAL_DIR=$(ls -td evaluation_results/eval_train_baseline_* 2>/dev/null | head -1)
+
+    if [ -z "$EVAL_DIR" ] || [ ! -f "$EVAL_DIR/report.json" ]; then
+        # Reconstruct report.json from per-instance reports if needed
+        log_info "evaluation_results missing; rebuilding report.json from logs/run_evaluation..."
+        PYTHONPATH=/home/gaokaizhang/SWE-Exp python3 << 'PYEOF'
+import json, os, glob
+from pathlib import Path
+
+def build_report_from_logs():
+    log_dir_candidates = sorted(glob.glob('logs/run_evaluation/eval_train_baseline_*'), reverse=True)
+    if not log_dir_candidates:
+        raise FileNotFoundError("No run_evaluation logs found for train baseline")
+    log_dir = log_dir_candidates[0]
+    per_instance = glob.glob(os.path.join(log_dir, 'DeepSeek_IA', '*', 'report.json'))
+    if not per_instance:
+        raise FileNotFoundError(f"No per-instance report.json files under {log_dir}")
+    results = []
+    for path in per_instance:
+        data = json.load(open(path))
+        if len(data) != 1:
+            continue
+        inst_id, entry = next(iter(data.items()))
+        results.append({
+            "instance_id": inst_id,
+            "resolved": entry.get("resolved", False),
+            "patch_successfully_applied": entry.get("patch_successfully_applied"),
+            "patch_exists": entry.get("patch_exists"),
+            "patch_is_None": entry.get("patch_is_None"),
+            "tests_status": entry.get("tests_status"),
+        })
+    run_id = Path(log_dir).name
+    out_dir = os.path.join('evaluation_results', run_id)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, 'report.json')
+    json.dump(results, open(out_path, 'w'), indent=2)
+    print(out_path)
+
+path = None
+try:
+    path = build_report_from_logs()
+except Exception as e:
+    print(f"ERROR: {e}")
+    raise
+PYEOF
+        EVAL_DIR=$(ls -td evaluation_results/eval_train_baseline_* 2>/dev/null | head -1)
+    fi
 
     if [ -f "$EVAL_DIR/report.json" ]; then
         log_success "Evaluation completed: $EVAL_DIR/report.json"
 
-        # Merge evaluation results with trajectory data
+        # Merge evaluation results with trajectory data, adding tree path and leaf_id
         log_info "Merging resolved status into trajectory data..."
-        python3 << 'PYEOF'
+        PYTHONPATH=/home/gaokaizhang/SWE-Exp python3 << 'PYEOF'
 import json
 import sys
 import os
+import glob
+from moatless.search_tree import SearchTree
+
+def find_latest_trajectory(instance_id: str) -> str | None:
+    base_dir = os.path.join('tmp', 'trajectory', instance_id)
+    if not os.path.isdir(base_dir):
+        return None
+    files = glob.glob(os.path.join(base_dir, '*_trajectory.json'))
+    return max(files, key=os.path.getctime) if files else None
+
+def get_leaf_id(tree_path: str) -> tuple[int | None, str]:
+    tree = SearchTree.from_file(tree_path)
+    finished = tree.get_finished_nodes()
+    if finished:
+        return finished[0].node_id, "finished"
+
+    best = tree.get_best_trajectory()
+    if best:
+        return best.node_id, "best_leaf"
+
+    return None, "missing"
 
 # Find evaluation directory
-eval_dir = None
-for d in sorted(os.listdir('evaluation_results'), reverse=True):
-    if d.startswith('eval_train_baseline_'):
-        eval_dir = os.path.join('evaluation_results', d)
-        break
-
+eval_dir = sorted([d for d in glob.glob('evaluation_results/eval_train_baseline_*') if os.path.isdir(d)], reverse=True)
 if not eval_dir:
     print("ERROR: Could not find evaluation results directory")
     sys.exit(1)
+eval_dir = eval_dir[0]
 
 # Load trajectory data
 trajectories = {}
@@ -181,7 +301,7 @@ report_path = os.path.join(eval_dir, 'report.json')
 with open(report_path, 'r') as f:
     eval_results = json.load(f)
 
-# Merge resolved status into trajectories
+# Merge resolved status into trajectories with metadata
 merged = []
 resolved_count = 0
 for result in eval_results:
@@ -189,6 +309,20 @@ for result in eval_results:
     if instance_id in trajectories:
         traj = trajectories[instance_id]
         traj['resolved'] = result.get('resolved', False)
+
+        tree_path = find_latest_trajectory(instance_id)
+        if not tree_path:
+            raise FileNotFoundError(f"No trajectory file found for {instance_id}")
+        traj['trajectory_path'] = tree_path
+        traj['source_tree_path'] = tree_path
+
+        leaf_id, leaf_source = get_leaf_id(tree_path)
+        if leaf_id is None:
+            raise ValueError(f"No finished or leaf nodes found in trajectory for {instance_id}")
+        traj['leaf_id'] = leaf_id
+        if leaf_source == "best_leaf":
+            print(f"WARNING: No finished nodes for {instance_id}; using best leaf node_id={leaf_id}")
+
         if traj['resolved']:
             resolved_count += 1
         merged.append(traj)
@@ -223,24 +357,24 @@ fi
 
 echo ""
 
-# Note: To skip Docker evaluation (saves 50 hours but all experiences will be FAILURES),
-# comment out the above block and uncomment the following:
-# log_info "========================================================================"
-# log_info "STAGE 1.5: Skipping Docker Evaluation (Fast Mode)"
-# log_info "========================================================================"
-# log_info "Using train trajectories WITHOUT Docker evaluation"
-# log_info "Note: All 199 training experiences will be classified as FAILURES"
-# echo ""
-# cp django/train_baseline.jsonl tmp/merged_leaf_analysis_with_trajectories.jsonl
-# if [ $? -eq 0 ]; then
-#     log_success "Prepared: tmp/merged_leaf_analysis_with_trajectories.jsonl"
-#     log_info "File contains trajectory data without 'resolved' field"
-# else
-#     log_error "Failed to prepare evaluation file!"
-#     exit 1
-# fi
+# # Note: To skip Docker evaluation (saves 50 hours but all experiences will be FAILURES),
+# # comment out the above block and uncomment the following:
+# # log_info "========================================================================"
+# # log_info "STAGE 1.5: Skipping Docker Evaluation (Fast Mode)"
+# # log_info "========================================================================"
+# # log_info "Using train trajectories WITHOUT Docker evaluation"
+# # log_info "Note: All 199 training experiences will be classified as FAILURES"
+# # echo ""
+# # cp django/train_baseline.jsonl tmp/merged_leaf_analysis_with_trajectories.jsonl
+# # if [ $? -eq 0 ]; then
+# #     log_success "Prepared: tmp/merged_leaf_analysis_with_trajectories.jsonl"
+# #     log_info "File contains trajectory data without 'resolved' field"
+# # else
+# #     log_error "Failed to prepare evaluation file!"
+# #     exit 1
+# # fi
 
-echo ""
+# echo ""
 
 ################################################################################
 # STAGE 2: EXTRACT ISSUE TYPES FROM 199 TRAIN INSTANCES
@@ -467,16 +601,105 @@ python workflow.py \
 
 # Save experience results
 mkdir -p django
+WITH_EXP_FILE="django/test_with_experience_${TIMESTAMP}.jsonl"
 if [ -f "prediction_verified.jsonl" ]; then
-    cp prediction_verified.jsonl "django/test_with_experience_${TIMESTAMP}.jsonl"
+    cp prediction_verified.jsonl "$WITH_EXP_FILE"
     EXP_RESULTS=$(wc -l < prediction_verified.jsonl)
     EXP_PATCHES=$(grep -c '"model_patch":' prediction_verified.jsonl 2>/dev/null || echo "0")
     log_success "Experience test completed: ${EXP_RESULTS} results, ${EXP_PATCHES} patches"
-    log_success "Saved to: django/test_with_experience_${TIMESTAMP}.jsonl"
+    log_success "Saved to: $WITH_EXP_FILE"
 else
     log_error "No experience test results generated!"
     exit 1
 fi
+
+echo ""
+
+################################################################################
+# STAGE 5: EVALUATE PATCHES (TEST BASELINE & WITH EXPERIENCE)
+################################################################################
+
+log_info "========================================================================"
+log_info "STAGE 5: Evaluate Test Patches (baseline vs with-experience)"
+log_info "========================================================================"
+
+log_info "Evaluating baseline patches (WITHOUT experience)..."
+bash evaluate.sh "$TEST_BASELINE_FILE" 2>&1 | tee "$LOG_DIR/stage5_evaluate_baseline.log"
+BASELINE_EVAL_DIR=$(ls -td evaluation_results/eval_test_baseline_* 2>/dev/null | head -1)
+
+log_info "Evaluating patches WITH experience..."
+bash evaluate.sh "$WITH_EXP_FILE" 2>&1 | tee "$LOG_DIR/stage5_evaluate_with_experience.log"
+EXP_EVAL_DIR=$(ls -td evaluation_results/eval_test_with_experience_* 2>/dev/null | head -1)
+
+if [ -n "$BASELINE_EVAL_DIR" ] && [ -f "$BASELINE_EVAL_DIR/report.json" ]; then
+    BASELINE_RESOLVED=$(grep -o '"resolved": true' "$BASELINE_EVAL_DIR/report.json" | wc -l)
+    log_success "Baseline eval resolved: ${BASELINE_RESOLVED}/30 (report: $BASELINE_EVAL_DIR/report.json)"
+else
+    log_warning "Baseline evaluation report not found"
+fi
+
+if [ -n "$EXP_EVAL_DIR" ] && [ -f "$EXP_EVAL_DIR/report.json" ]; then
+    EXP_RESOLVED=$(grep -o '"resolved": true' "$EXP_EVAL_DIR/report.json" | wc -l)
+    log_success "With-experience eval resolved: ${EXP_RESOLVED}/30 (report: $EXP_EVAL_DIR/report.json)"
+else
+    log_warning "With-experience evaluation report not found"
+fi
+
+# Build side-by-side comparison for 30 test instances
+log_info "Building baseline vs experience comparison..."
+python - <<'PY' "$TEST_BASELINE_FILE" "$WITH_EXP_FILE" "$BASELINE_EVAL_DIR" "$EXP_EVAL_DIR" "$TIMESTAMP"
+import json, os, sys
+from pathlib import Path
+
+baseline_file, exp_file, base_eval_dir, exp_eval_dir, ts = sys.argv[1:]
+
+def load_jsonl(path):
+    data = {}
+    with open(path) as f:
+        for line in f:
+            line=line.strip()
+            if not line:
+                continue
+            obj=json.loads(line)
+            data[obj["instance_id"]]=obj.get("model_patch","")
+    return data
+
+def load_report(dir_path):
+    rep=os.path.join(dir_path, "report.json")
+    if not os.path.exists(rep):
+        return {}
+    data=json.load(open(rep))
+    return {d["instance_id"]: bool(d.get("resolved")) for d in data}
+
+test_ids=[line.strip() for line in open("test_instances.txt") if line.strip()]
+baseline_patches=load_jsonl(baseline_file)
+exp_patches=load_jsonl(exp_file) if os.path.exists(exp_file) else {}
+baseline_res=load_report(base_eval_dir) if base_eval_dir else {}
+exp_res=load_report(exp_eval_dir) if exp_eval_dir else {}
+
+rows=[]
+for tid in test_ids:
+    rows.append({
+        "instance_id": tid,
+        "baseline_resolved": baseline_res.get(tid, False),
+        "experience_resolved": exp_res.get(tid, False),
+        "baseline_patch": baseline_patches.get(tid, ""),
+        "experience_patch": exp_patches.get(tid, ""),
+    })
+
+out_dir=Path("evaluation_results")
+out_dir.mkdir(exist_ok=True)
+out_path=out_dir / f"comparison_{ts}.jsonl"
+with open(out_path, "w") as f:
+    for r in rows:
+        f.write(json.dumps(r) + "\n")
+
+base_acc=sum(1 for r in rows if r["baseline_resolved"]) / len(rows) if rows else 0
+exp_acc=sum(1 for r in rows if r["experience_resolved"]) / len(rows) if rows else 0
+print(f"[INFO] Baseline resolved: {sum(1 for r in rows if r['baseline_resolved'])}/{len(rows)} ({base_acc*100:.1f}%)")
+print(f"[INFO] With-experience resolved: {sum(1 for r in rows if r['experience_resolved'])}/{len(rows)} ({exp_acc*100:.1f}%)")
+print(f"[INFO] Comparison written to {out_path}")
+PY
 
 echo ""
 
@@ -504,7 +727,7 @@ echo ""
 
 log_info "RESULTS:"
 log_info "  WITHOUT experience: $TEST_BASELINE_FILE (${TEST_BASELINE_COUNT} instances)"
-log_info "  WITH experience: django/test_with_experience_${TIMESTAMP}.jsonl (${EXP_RESULTS} instances)"
+log_info "  WITH experience: $WITH_EXP_FILE (${EXP_RESULTS} instances)"
 echo ""
 
 # Compare patch counts (with safe arithmetic)
