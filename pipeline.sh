@@ -3,23 +3,26 @@
 # EXPERIENCE PIPELINE - STAGES 1.5, 2-4
 #
 # Prerequisites: Stage 1 must be completed for all instances
-#   - Train: 199 instances with trajectories in tmp/trajectory/
-#   - Test: 30 instances with baseline results in django/test_baseline.jsonl
+#   - Train: Expected list in train_instances_expected.txt (201 ids)
+#   - Test:  Expected list in test_instances_expected.txt (30 ids)
 #
 # This script:
-#   1. Stage 1.5: (OPTIONAL) Evaluate train patches with Docker (~50 hours)
-#   2. Stage 2: Extract issue types from 199 train trajectories
-#   3. Stage 3: Build experience tree from 199 train trajectories
-#   4. Stage 3.5: Extract issue types from 30 test instances
-#   5. Stage 4: Test 30 instances WITH experience (from 199 train)
+#   1. Stage 1: Collect trajectories WITHOUT experience (train + test)
+#   1.1 Stage 1.1: (OPTIONAL) Evaluate train patches with Docker (~50 hours)
+#   2. Stage 2: Extract train issue types (experience extraction)
+#   2.1 Stage 2.1: Build experience tree (experience extraction)
+#   3. Stage 3: Extract test issue types (retrieval prep, no leakage)
+#   4. Stage 4: Run test instances WITH experience (experience reuse)
+#   5. Stage 5.x: Evaluate baseline vs with-experience results
 ################################################################################
 
-set -e
+set -euo pipefail
 
 # Colors
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -38,13 +41,28 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $(date '+%H:%M:%S') - $1" | tee -a "$LOG_DIR/main.log"
 }
 
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $(date '+%H:%M:%S') - $1" | tee -a "$LOG_DIR/main.log"
+}
+
+start_stage() {
+    local stage_label="$1"
+    local description="$2"
+    log_info "========================================================================"
+    log_info "STAGE ${stage_label}: ${description}"
+    log_info "========================================================================"
+}
+
+EXPECTED_TRAIN_FILE="train_instances_expected.txt"
+EXPECTED_TEST_FILE="test_instances_expected.txt"
+ACTUAL_TRAIN_FILE="train_instances_actual.txt"
+ACTUAL_TEST_FILE="test_instances_actual.txt"
+TRAIN_BASELINE_FILE="django/train_baseline.jsonl"
+TEST_BASELINE_FILE="django/test_baseline.jsonl"
+
 ################################################################################
 # SETUP
 ################################################################################
-
-log_info "========================================================================"
-log_info "EXPERIENCE PIPELINE - STAGES 2-4"
-log_info "========================================================================"
 
 # Activate conda environment
 source ~/conda/etc/profile.d/conda.sh
@@ -73,53 +91,89 @@ log_success "ANTHROPIC_API_KEY verified"
 # STAGE 1: TRAJECTORY COLLECTION (TRAIN & TEST) FOR FAIR COMPARISON
 ################################################################################
 
-log_info "========================================================================"
-log_info "STAGE 1: Collect Train Trajectories (WITHOUT experience)"
-log_info "========================================================================"
-bash stage1.sh train train_instances.txt 2>&1 | tee "$LOG_DIR/stage1_train.log"
-if [ $? -ne 0 ]; then
-    log_error "Stage 1 train run failed"
+for file in "$EXPECTED_TRAIN_FILE" "$EXPECTED_TEST_FILE"; do
+    if [ ! -f "$file" ]; then
+        log_error "Missing instance file: $file"
+        exit 1
+    fi
+done
+
+TRAIN_EXPECTED_COUNT=$(wc -l < "$EXPECTED_TRAIN_FILE")
+TEST_EXPECTED_COUNT=$(wc -l < "$EXPECTED_TEST_FILE")
+
+start_stage "1" "Collect trajectories WITHOUT experience (train + test)"
+log_info "Train list (expected): $EXPECTED_TRAIN_FILE (${TRAIN_EXPECTED_COUNT} ids)"
+log_info "Test list (expected):  $EXPECTED_TEST_FILE (${TEST_EXPECTED_COUNT} ids)"
+
+if ! bash stage1.sh train "$EXPECTED_TRAIN_FILE" 2>&1 | tee "$LOG_DIR/stage1_train.log"; then
+    log_error "Stage 1 (train) run failed"
     exit 1
 fi
 
-log_info "========================================================================"
-log_info "STAGE 1: Collect Test Trajectories (WITHOUT experience)"
-log_info "========================================================================"
-bash stage1.sh test test_instances.txt 2>&1 | tee "$LOG_DIR/stage1_test.log"
-if [ $? -ne 0 ]; then
-    log_error "Stage 1 test run failed"
+if ! bash stage1.sh test "$EXPECTED_TEST_FILE" 2>&1 | tee "$LOG_DIR/stage1_test.log"; then
+    log_error "Stage 1 (test) run failed"
     exit 1
 fi
 
-# Verify prerequisites (after stage1 runs)
-TRAIN_TRAJECTORY_COUNT=$(ls tmp/trajectory/ 2>/dev/null | wc -l)
-TEST_BASELINE_FILE="django/test_baseline.jsonl"
+log_info "Deriving actual instance lists from Stage 1 outputs..."
+if ! python <<PYEOF 2>&1 | tee "$LOG_DIR/stage1_actual_lists.log"; then
+import json, os, sys
+
+expected_train = [line.strip() for line in open("${EXPECTED_TRAIN_FILE}") if line.strip()]
+expected_test = [line.strip() for line in open("${EXPECTED_TEST_FILE}") if line.strip()]
+
+def write_actual(jsonl_path, out_path, expected, label):
+    if not os.path.isfile(jsonl_path):
+        print(f"ERROR: Missing {jsonl_path}")
+        sys.exit(1)
+
+    ids = []
+    with open(jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            ids.append(obj["instance_id"])
+
+    with open(out_path, "w") as out:
+        out.write("\n".join(ids))
+        if ids:
+            out.write("\n")
+
+    missing = [i for i in expected if i not in ids]
+    extra = [i for i in ids if i not in expected]
+
+    print(f"{label} actual: {len(ids)} ids (expected {len(expected)})")
+    if missing:
+        print(f"  Missing {len(missing)} expected ids: {', '.join(missing[:10])}" + (" ..." if len(missing) > 10 else ""))
+    if extra:
+        print(f"  Unexpected {len(extra)} ids: {', '.join(extra[:10])}" + (" ..." if len(extra) > 10 else ""))
+    if not ids:
+        print(f"ERROR: No ids found in {jsonl_path}")
+        sys.exit(1)
+
+write_actual("${TRAIN_BASELINE_FILE}", "${ACTUAL_TRAIN_FILE}", expected_train, "Train")
+write_actual("${TEST_BASELINE_FILE}", "${ACTUAL_TEST_FILE}", expected_test, "Test")
+PYEOF
+    log_error "Failed to derive actual instance lists"
+    exit 1
+fi
+
+TRAIN_ACTUAL_COUNT=$(wc -l < "$ACTUAL_TRAIN_FILE")
+TEST_ACTUAL_COUNT=$(wc -l < "$ACTUAL_TEST_FILE")
+TRAIN_BASELINE_COUNT=$(wc -l < "$TRAIN_BASELINE_FILE" 2>/dev/null || echo "0")
 TEST_BASELINE_COUNT=$(wc -l < "$TEST_BASELINE_FILE" 2>/dev/null || echo "0")
-
-log_info "Prerequisites check:"
-log_info "  Train trajectories: ${TRAIN_TRAJECTORY_COUNT}/199"
-log_info "  Test baseline: ${TEST_BASELINE_COUNT}/30 ($TEST_BASELINE_FILE)"
-
-if [ ${TRAIN_TRAJECTORY_COUNT} -lt 199 ]; then
-    log_error "Missing train trajectories! Expected 199, found ${TRAIN_TRAJECTORY_COUNT}"
-    exit 1
-fi
-
-if [ ${TEST_BASELINE_COUNT} -ne 30 ]; then
-    log_error "Missing test baseline! Expected 30, found ${TEST_BASELINE_COUNT}"
-    exit 1
-fi
-
-log_success "All prerequisites met"
+log_success "Recorded actual instance lists: Train ${TRAIN_ACTUAL_COUNT}/${TRAIN_EXPECTED_COUNT}, Test ${TEST_ACTUAL_COUNT}/${TEST_EXPECTED_COUNT}"
 
 # Ensure tmp/trajectory only contains TRAIN trajectories (move any test runs to backup)
 log_info "Ensuring tmp/trajectory contains train trajectories only..."
-python << 'PYEOF' 2>/dev/null
+python <<PYEOF 2>/dev/null
 import os
 import shutil
 
-train_ids = set(line.strip() for line in open('train_instances.txt') if line.strip())
-test_ids = set(line.strip() for line in open('test_instances.txt') if line.strip())
+train_ids = set(line.strip() for line in open('${EXPECTED_TRAIN_FILE}') if line.strip())
+test_ids = set(line.strip() for line in open('${EXPECTED_TEST_FILE}') if line.strip())
 traj_root = 'tmp/trajectory'
 backup_root = 'tmp/trajectory_test_backup'
 
@@ -156,7 +210,7 @@ export PYTHONPATH=/home/gaokaizhang/SWE-Exp
 echo ""
 
 ################################################################################
-# STAGE 1.5: (OPTIONAL) EVALUATE TRAIN PATCHES WITH DOCKER
+# STAGE 1.1: (OPTIONAL) EVALUATE TRAIN PATCHES WITH DOCKER
 ################################################################################
 #
 # IMPORTANT: This stage should run AFTER Stage 1 (trajectory collection)
@@ -170,45 +224,44 @@ echo ""
 # - With evaluation: Mixed SUCCESS/FAILURE experiences based on actual tests
 #
 # TRADE-OFFS:
-# - WITH evaluation (~50 hours for 199 instances):
+# - WITH evaluation (~15 min per train instance):
 #   ✅ Accurate success/failure classification from actual test results
 #   ✅ Learn from both successful and failed solution patterns
 #   ✅ Higher quality experience database
-#   ❌ Requires ~50 hours (199 instances × 15 min each)
+#   ❌ Requires ~15 min per train instance (hours scale with train set size)
 #   ❌ Significant computational resources
 #
-# - WITHOUT evaluation (default):
-#   ✅ Fast pipeline execution (skip 50 hours)
+# - WITHOUT evaluation (skip this block):
+#   ✅ Fast pipeline execution
 #   ✅ Still generates useful failure analysis experiences
 #   ✅ Good for quick experimentation
 #   ❌ All training experiences treated as failures
 #   ❌ Missing successful solution patterns from training set
 #
 # RECOMMENDATION:
-# - Quick experimentation: Keep commented out (default)
-# - Production/Research: Uncomment to enable full evaluation
+# - Production/Research: Keep enabled for accurate labels (default)
+# - Quick experimentation: Comment out this block to skip evaluation
 #
 ################################################################################
 
-# Stage 1.5: Enable training evaluation (ENABLED by default for correct experience classification)
-log_info "========================================================================"
-log_info "STAGE 1.5: Evaluate Train Patches with Docker"
-log_info "========================================================================"
-log_info "This evaluates 199 training patches to get accurate resolved status"
-log_info "Estimated time: ~50 hours (199 instances × 15 min)"
+start_stage "1.1" "Evaluate train patches with Docker (labels for experience quality)"
+log_info "Input: ${TRAIN_BASELINE_FILE} (${TRAIN_ACTUAL_COUNT}/${TRAIN_EXPECTED_COUNT} instances)"
+log_info "Estimated time: ~$((${TRAIN_ACTUAL_COUNT} * 15 / 60)) hours (${TRAIN_ACTUAL_COUNT} instances × 15 min)"
 echo ""
 
-log_info "Evaluating django/train_baseline.jsonl with Docker..."
-bash evaluate.sh django/train_baseline.jsonl 2>&1 | tee "$LOG_DIR/stage1.5_evaluate_train.log"
+log_info "Evaluating ${TRAIN_BASELINE_FILE} with Docker..."
+if ! bash evaluate.sh "$TRAIN_BASELINE_FILE" 2>&1 | tee "$LOG_DIR/stage1.1_evaluate_train.log"; then
+    log_error "Evaluation failed! Check log: $LOG_DIR/stage1.1_evaluate_train.log"
+    exit 1
+fi
 
-if [ $? -eq 0 ]; then
-    # Find or build the evaluation results directory
-    EVAL_DIR=$(ls -td evaluation_results/eval_train_baseline_* 2>/dev/null | head -1)
+# Find or build the evaluation results directory
+EVAL_DIR=$(ls -td evaluation_results/eval_train_baseline_* 2>/dev/null | head -1)
 
-    if [ -z "$EVAL_DIR" ] || [ ! -f "$EVAL_DIR/report.json" ]; then
-        # Reconstruct report.json from per-instance reports if needed
-        log_info "evaluation_results missing; rebuilding report.json from logs/run_evaluation..."
-        PYTHONPATH=/home/gaokaizhang/SWE-Exp python3 << 'PYEOF'
+if [ -z "$EVAL_DIR" ] || [ ! -f "$EVAL_DIR/report.json" ]; then
+    # Reconstruct report.json from per-instance reports if needed
+    log_info "evaluation_results missing; rebuilding report.json from logs/run_evaluation..."
+    PYTHONPATH=/home/gaokaizhang/SWE-Exp python3 << 'PYEOF'
 import json, os, glob
 from pathlib import Path
 
@@ -248,15 +301,15 @@ except Exception as e:
     print(f"ERROR: {e}")
     raise
 PYEOF
-        EVAL_DIR=$(ls -td evaluation_results/eval_train_baseline_* 2>/dev/null | head -1)
-    fi
+    EVAL_DIR=$(ls -td evaluation_results/eval_train_baseline_* 2>/dev/null | head -1)
+fi
 
-    if [ -f "$EVAL_DIR/report.json" ]; then
-        log_success "Evaluation completed: $EVAL_DIR/report.json"
+if [ -f "$EVAL_DIR/report.json" ]; then
+    log_success "Evaluation completed: $EVAL_DIR/report.json"
 
-        # Merge evaluation results with trajectory data, adding tree path and leaf_id
-        log_info "Merging resolved status into trajectory data..."
-        PYTHONPATH=/home/gaokaizhang/SWE-Exp python3 << 'PYEOF'
+    # Merge evaluation results with trajectory data, adding tree path and leaf_id
+    log_info "Merging resolved status into trajectory data..."
+    PYTHONPATH=/home/gaokaizhang/SWE-Exp python3 << 'PYEOF'
 import json
 import sys
 import os
@@ -338,34 +391,31 @@ print(f"Merged {len(merged)} instances with evaluation results")
 print(f"Resolved: {resolved_count}/{len(merged)} ({100*resolved_count/len(merged):.1f}%)")
 PYEOF
 
-        if [ $? -eq 0 ]; then
-            log_success "Merged evaluation results → tmp/merged_leaf_analysis_with_trajectories.jsonl"
-            RESOLVED=$(grep -o '"resolved": true' "$EVAL_DIR/report.json" | wc -l)
-            log_info "Training evaluation results: ${RESOLVED}/199 resolved"
-        else
-            log_error "Failed to merge evaluation results!"
-            exit 1
-        fi
+    if [ $? -eq 0 ]; then
+        log_success "Merged evaluation results → tmp/merged_leaf_analysis_with_trajectories.jsonl"
+        TRAIN_EVAL_COUNT=$(wc -l < tmp/merged_leaf_analysis_with_trajectories.jsonl 2>/dev/null || echo "0")
+        RESOLVED=$(grep -o '"resolved": true' "$EVAL_DIR/report.json" | wc -l)
+        log_info "Training evaluation results: ${RESOLVED}/${TRAIN_EVAL_COUNT} resolved"
     else
-        log_error "Evaluation report not found: $EVAL_DIR/report.json"
+        log_error "Failed to merge evaluation results!"
         exit 1
     fi
 else
-    log_error "Evaluation failed! Check log: $LOG_DIR/stage1.5_evaluate_train.log"
+    log_error "Evaluation report not found: $EVAL_DIR/report.json"
     exit 1
 fi
 
 echo ""
 
-# # Note: To skip Docker evaluation (saves 50 hours but all experiences will be FAILURES),
+# # Note: To skip Docker evaluation (fast mode; all experiences treated as FAILURES),
 # # comment out the above block and uncomment the following:
 # # log_info "========================================================================"
-# # log_info "STAGE 1.5: Skipping Docker Evaluation (Fast Mode)"
+# # log_info "STAGE 1.1: Skipping Docker Evaluation (Fast Mode)"
 # # log_info "========================================================================"
 # # log_info "Using train trajectories WITHOUT Docker evaluation"
-# # log_info "Note: All 199 training experiences will be classified as FAILURES"
+# # log_info "Note: All training experiences will be classified as FAILURES"
 # # echo ""
-# # cp django/train_baseline.jsonl tmp/merged_leaf_analysis_with_trajectories.jsonl
+# # cp ${TRAIN_BASELINE_FILE} tmp/merged_leaf_analysis_with_trajectories.jsonl
 # # if [ $? -eq 0 ]; then
 # #     log_success "Prepared: tmp/merged_leaf_analysis_with_trajectories.jsonl"
 # #     log_info "File contains trajectory data without 'resolved' field"
@@ -377,23 +427,26 @@ echo ""
 # echo ""
 
 ################################################################################
-# STAGE 2: EXTRACT ISSUE TYPES FROM 199 TRAIN INSTANCES
+# STAGE 2: EXTRACT TRAIN ISSUE TYPES (EXPERIENCE EXTRACTION)
 ################################################################################
 
-log_info "========================================================================"
-log_info "STAGE 2: Extract Issue Types from 199 Train Instances"
-log_info "========================================================================"
+start_stage "2" "Extract train issue types (experience extraction)"
+log_info "Source trajectories: tmp/trajectory/ (${TRAIN_ACTUAL_COUNT} actual train runs)"
 
-log_info "Extracting issue types from trajectories in tmp/trajectory/..."
-
-python moatless/experience/exp_agent/extract_verified_issue_types_batch.py \
-    2>&1 | tee "$LOG_DIR/stage2_extract_issue_types.log"
+if ! python moatless/experience/exp_agent/extract_verified_issue_types_batch.py \
+    2>&1 | tee "$LOG_DIR/stage2_extract_issue_types.log"; then
+    log_error "Failed during issue type extraction"
+    exit 1
+fi
 
 # Merge batch files
 log_info "Merging batch issue type files..."
-python moatless/experience/exp_agent/extract_verified_issue_types_batch.py \
+if ! python moatless/experience/exp_agent/extract_verified_issue_types_batch.py \
     --merge \
-    2>&1 | tee -a "$LOG_DIR/stage2_extract_issue_types.log"
+    2>&1 | tee -a "$LOG_DIR/stage2_extract_issue_types.log"; then
+    log_error "Failed to merge issue type batches (see $LOG_DIR/stage2_extract_issue_types.log)"
+    exit 1
+fi
 
 # Save as TRAIN issue types (explicit train/test split)
 if [ -f "tmp/verified_issue_types_merged.json" ]; then
@@ -401,7 +454,7 @@ if [ -f "tmp/verified_issue_types_merged.json" ]; then
     log_info "Saved TRAIN issue types to tmp/het/train_issue_types.json"
 fi
 
-if [ $? -eq 0 ] && [ -f "tmp/het/train_issue_types.json" ]; then
+if [ -f "tmp/het/train_issue_types.json" ]; then
     TRAIN_ISSUE_COUNT=$(python -c "import json; print(len(json.load(open('tmp/het/train_issue_types.json'))))" 2>/dev/null || echo "0")
     log_success "TRAIN issue types extracted: ${TRAIN_ISSUE_COUNT} instances"
 else
@@ -413,17 +466,17 @@ fi
 echo ""
 
 ################################################################################
-# STAGE 3: BUILD EXPERIENCE TREE FROM 199 TRAIN INSTANCES
+# STAGE 2.1: BUILD EXPERIENCE TREE (EXPERIENCE EXTRACTION)
 ################################################################################
 
-log_info "========================================================================"
-log_info "STAGE 3: Build Experience Tree from 199 Train Instances"
-log_info "========================================================================"
+start_stage "2.1" "Build experience tree from train trajectories"
+log_info "Mining experiences from train runs (${TRAIN_ACTUAL_COUNT} actual instances)"
 
-log_info "Mining experiences from 199 train trajectories..."
-
-python moatless/experience/exp_agent/exp_agent.py \
-    2>&1 | tee "$LOG_DIR/stage3_build_experience.log"
+if ! python moatless/experience/exp_agent/exp_agent.py \
+    2>&1 | tee "$LOG_DIR/stage2.1_build_experience.log"; then
+    log_error "Failed to build experience tree (see $LOG_DIR/stage2.1_build_experience.log)"
+    exit 1
+fi
 
 # Copy experience tree to tmp/het/ for workflow.py
 if [ -f "tmp/verified_experience_tree.json" ]; then
@@ -431,30 +484,27 @@ if [ -f "tmp/verified_experience_tree.json" ]; then
     log_info "Copied experience tree to tmp/het/ for workflow.py"
 fi
 
-if [ $? -eq 0 ] && [ -f "tmp/het/verified_experience_tree.json" ]; then
+if [ -f "tmp/het/verified_experience_tree.json" ]; then
     EXP_COUNT=$(python -c "import json; data=json.load(open('tmp/het/verified_experience_tree.json')); print(len(data))" 2>/dev/null || echo "0")
     log_success "Experience tree built: ${EXP_COUNT} instances"
     log_success "Saved to: tmp/het/verified_experience_tree.json"
 else
     log_error "Failed to build experience tree!"
-    log_error "Check log: $LOG_DIR/stage3_build_experience.log"
+    log_error "Check log: $LOG_DIR/stage2.1_build_experience.log"
     exit 1
 fi
 
 echo ""
 
 ################################################################################
-# STAGE 3.5: EXTRACT ISSUE TYPES FROM 30 TEST INSTANCES (NEW!)
+# STAGE 3: EXTRACT TEST ISSUE TYPES (RETRIEVAL PREP)
 ################################################################################
 
-log_info "========================================================================"
-log_info "STAGE 3.5: Extract Issue Types from 30 Test Instances"
-log_info "========================================================================"
-
-log_info "Extracting test issue types for experience retrieval (no data leakage)"
+start_stage "3" "Extract test issue types for retrieval (no leakage)"
+log_info "Test instances (actual): ${ACTUAL_TEST_FILE} (${TEST_ACTUAL_COUNT}/${TEST_EXPECTED_COUNT})"
 
 # Create Python script to extract test issue types with retry logic
-python << 'PYTHON_EOF' 2>&1 | tee "$LOG_DIR/stage3.5_extract_test_issue_types.log"
+python <<PYTHON_EOF 2>&1 | tee "$LOG_DIR/stage3_extract_test_issue_types.log"
 import json
 import time
 import sys
@@ -465,7 +515,7 @@ from moatless.completion.completion import CompletionModel
 import os
 
 # Load test instances
-with open('test_instances.txt', 'r') as f:
+with open('${ACTUAL_TEST_FILE}', 'r') as f:
     test_ids = [line.strip() for line in f if line.strip()]
 
 print(f"Extracting issue types for {len(test_ids)} test instances...")
@@ -531,7 +581,7 @@ if [ $? -eq 0 ] && [ -f "tmp/het/test_issue_types.json" ]; then
     log_success "Saved to: tmp/het/test_issue_types.json"
 else
     log_error "Failed to extract TEST issue types!"
-    log_error "Check log: $LOG_DIR/stage3.5_extract_test_issue_types.log"
+    log_error "Check log: $LOG_DIR/stage3_extract_test_issue_types.log"
     exit 1
 fi
 
@@ -571,12 +621,10 @@ log_success "Train/test separation verified - no data leakage"
 echo ""
 
 ################################################################################
-# STAGE 4: TEST 30 INSTANCES WITH EXPERIENCE (FROM 199 TRAIN)
+# STAGE 4: TEST INSTANCES WITH EXPERIENCE (EXPERIENCE REUSE)
 ################################################################################
 
-log_info "========================================================================"
-log_info "STAGE 4: Test 30 Instances WITH Experience (from 199 train)"
-log_info "========================================================================"
+start_stage "4" "Run test instances WITH experience"
 
 # Verify experience database
 if [ ! -f "tmp/het/verified_experience_tree.json" ]; then
@@ -584,15 +632,15 @@ if [ ! -f "tmp/het/verified_experience_tree.json" ]; then
     exit 1
 fi
 
-log_success "Experience database ready (from 199 train instances)"
-log_info "Running 30 test instances WITH experience..."
+log_success "Experience database ready (from train instances)"
+log_info "Running ${TEST_ACTUAL_COUNT} test instances WITH experience..."
 
 # Clear prediction file
 > prediction_verified.jsonl
 
 # Run test instances with experience
 python workflow.py \
-    --instance_ids test_instances.txt \
+    --instance_ids "$ACTUAL_TEST_FILE" \
     --max_iterations 20 \
     --max_expansions 3 \
     --max_finished_nodes 1 \
@@ -619,39 +667,51 @@ echo ""
 # STAGE 5: EVALUATE PATCHES (TEST BASELINE & WITH EXPERIENCE)
 ################################################################################
 
-log_info "========================================================================"
-log_info "STAGE 5: Evaluate Test Patches (baseline vs with-experience)"
-log_info "========================================================================"
-
-log_info "Evaluating baseline patches (WITHOUT experience)..."
-bash evaluate.sh "$TEST_BASELINE_FILE" 2>&1 | tee "$LOG_DIR/stage5_evaluate_baseline.log"
+start_stage "5.1" "Evaluate baseline patches (WITHOUT experience)"
+if ! bash evaluate.sh "$TEST_BASELINE_FILE" 2>&1 | tee "$LOG_DIR/stage5.1_evaluate_baseline.log"; then
+    log_error "Baseline evaluation failed (see $LOG_DIR/stage5.1_evaluate_baseline.log)"
+    exit 1
+fi
 BASELINE_EVAL_DIR=$(ls -td evaluation_results/eval_test_baseline_* 2>/dev/null | head -1)
 
-log_info "Evaluating patches WITH experience..."
-bash evaluate.sh "$WITH_EXP_FILE" 2>&1 | tee "$LOG_DIR/stage5_evaluate_with_experience.log"
+start_stage "5.2" "Evaluate patches WITH experience"
+if ! bash evaluate.sh "$WITH_EXP_FILE" 2>&1 | tee "$LOG_DIR/stage5.2_evaluate_with_experience.log"; then
+    log_error "With-experience evaluation failed (see $LOG_DIR/stage5.2_evaluate_with_experience.log)"
+    exit 1
+fi
 EXP_EVAL_DIR=$(ls -td evaluation_results/eval_test_with_experience_* 2>/dev/null | head -1)
 
 if [ -n "$BASELINE_EVAL_DIR" ] && [ -f "$BASELINE_EVAL_DIR/report.json" ]; then
     BASELINE_RESOLVED=$(grep -o '"resolved": true' "$BASELINE_EVAL_DIR/report.json" | wc -l)
-    log_success "Baseline eval resolved: ${BASELINE_RESOLVED}/30 (report: $BASELINE_EVAL_DIR/report.json)"
+    BASELINE_TOTAL=$(python - <<'PY' "$BASELINE_EVAL_DIR/report.json"
+import json,sys
+print(len(json.load(open(sys.argv[1]))))
+PY
+)
+    log_success "Baseline eval resolved: ${BASELINE_RESOLVED}/${BASELINE_TOTAL} (report: $BASELINE_EVAL_DIR/report.json)"
 else
     log_warning "Baseline evaluation report not found"
 fi
 
 if [ -n "$EXP_EVAL_DIR" ] && [ -f "$EXP_EVAL_DIR/report.json" ]; then
     EXP_RESOLVED=$(grep -o '"resolved": true' "$EXP_EVAL_DIR/report.json" | wc -l)
-    log_success "With-experience eval resolved: ${EXP_RESOLVED}/30 (report: $EXP_EVAL_DIR/report.json)"
+    EXP_TOTAL=$(python - <<'PY' "$EXP_EVAL_DIR/report.json"
+import json,sys
+print(len(json.load(open(sys.argv[1]))))
+PY
+)
+    log_success "With-experience eval resolved: ${EXP_RESOLVED}/${EXP_TOTAL} (report: $EXP_EVAL_DIR/report.json)"
 else
     log_warning "With-experience evaluation report not found"
 fi
 
-# Build side-by-side comparison for 30 test instances
-log_info "Building baseline vs experience comparison..."
-python - <<'PY' "$TEST_BASELINE_FILE" "$WITH_EXP_FILE" "$BASELINE_EVAL_DIR" "$EXP_EVAL_DIR" "$TIMESTAMP"
+# Build side-by-side comparison for actual test instances
+start_stage "5.3" "Build baseline vs experience comparison"
+python - <<'PY' "$TEST_BASELINE_FILE" "$WITH_EXP_FILE" "$BASELINE_EVAL_DIR" "$EXP_EVAL_DIR" "$TIMESTAMP" "$ACTUAL_TEST_FILE"
 import json, os, sys
 from pathlib import Path
 
-baseline_file, exp_file, base_eval_dir, exp_eval_dir, ts = sys.argv[1:]
+baseline_file, exp_file, base_eval_dir, exp_eval_dir, ts, test_file = sys.argv[1:]
 
 def load_jsonl(path):
     data = {}
@@ -671,7 +731,7 @@ def load_report(dir_path):
     data=json.load(open(rep))
     return {d["instance_id"]: bool(d.get("resolved")) for d in data}
 
-test_ids=[line.strip() for line in open("test_instances.txt") if line.strip()]
+test_ids=[line.strip() for line in open(test_file) if line.strip()]
 baseline_patches=load_jsonl(baseline_file)
 exp_patches=load_jsonl(exp_file) if os.path.exists(exp_file) else {}
 baseline_res=load_report(base_eval_dir) if base_eval_dir else {}
@@ -713,13 +773,20 @@ log_success "===================================================================
 echo ""
 
 log_info "EXECUTION SUMMARY:"
-log_info "  Stage 2: Issue type extraction (199 train) - COMPLETED"
-log_info "  Stage 3: Experience tree building (199 train) - COMPLETED"
-log_info "  Stage 3.5: Issue type extraction (30 test) - COMPLETED (NEW!)"
-log_info "  Stage 4: Test WITH experience (30 test) - COMPLETED"
+log_info "  Stage 1: Trajectory collection - COMPLETED (train ${TRAIN_ACTUAL_COUNT}/${TRAIN_EXPECTED_COUNT}, test ${TEST_ACTUAL_COUNT}/${TEST_EXPECTED_COUNT})"
+log_info "  Stage 1.1: Train evaluation (Docker) - COMPLETED"
+log_info "  Stage 2: Train issue type extraction - COMPLETED (${TRAIN_ISSUE_COUNT})"
+log_info "  Stage 2.1: Experience tree building - COMPLETED (${EXP_COUNT})"
+log_info "  Stage 3: Test issue type extraction - COMPLETED (${TEST_ISSUE_COUNT})"
+log_info "  Stage 4: Test WITH experience - COMPLETED (${EXP_RESULTS} results)"
+log_info "  Stage 5: Evaluation (baseline + with-experience) - COMPLETED"
 echo ""
 
 log_info "DATA FILES:"
+log_info "  Train instances (expected): ${EXPECTED_TRAIN_FILE} (${TRAIN_EXPECTED_COUNT})"
+log_info "  Train instances (actual):   ${ACTUAL_TRAIN_FILE} (${TRAIN_ACTUAL_COUNT})"
+log_info "  Test instances (expected):  ${EXPECTED_TEST_FILE} (${TEST_EXPECTED_COUNT})"
+log_info "  Test instances (actual):    ${ACTUAL_TEST_FILE} (${TEST_ACTUAL_COUNT})"
 log_info "  Train issue types: tmp/het/train_issue_types.json (${TRAIN_ISSUE_COUNT})"
 log_info "  Test issue types: tmp/het/test_issue_types.json (${TEST_ISSUE_COUNT})"
 log_info "  Experience tree: tmp/het/verified_experience_tree.json (${EXP_COUNT})"
@@ -737,16 +804,16 @@ log_info "PATCH COMPARISON:"
 # Safe percentage calculation
 if [ ${TEST_BASELINE_COUNT} -gt 0 ]; then
     BASELINE_PCT=$((BASELINE_PATCHES * 100 / TEST_BASELINE_COUNT))
-    log_info "  WITHOUT experience: ${BASELINE_PATCHES}/30 patches (${BASELINE_PCT}%)"
+    log_info "  WITHOUT experience: ${BASELINE_PATCHES}/${TEST_BASELINE_COUNT} patches (${BASELINE_PCT}%)"
 else
-    log_info "  WITHOUT experience: ${BASELINE_PATCHES}/30 patches"
+    log_info "  WITHOUT experience: ${BASELINE_PATCHES}/${TEST_BASELINE_COUNT} patches"
 fi
 
 if [ ${EXP_RESULTS} -gt 0 ]; then
     EXP_PCT=$((EXP_PATCHES * 100 / EXP_RESULTS))
-    log_info "  WITH experience: ${EXP_PATCHES}/30 patches (${EXP_PCT}%)"
+    log_info "  WITH experience: ${EXP_PATCHES}/${EXP_RESULTS} patches (${EXP_PCT}%)"
 else
-    log_info "  WITH experience: ${EXP_PATCHES}/30 patches"
+    log_info "  WITH experience: ${EXP_PATCHES}/${EXP_RESULTS} patches"
 fi
 
 PATCH_DIFF=$((EXP_PATCHES - BASELINE_PATCHES))
@@ -760,10 +827,10 @@ fi
 
 echo ""
 log_info "NEXT STEPS:"
-log_info "  1. Compare results: $TEST_BASELINE_FILE vs django/test_with_experience_${TIMESTAMP}.jsonl"
-log_info "  2. Evaluate patches:"
-log_info "       bash evaluate.sh django/test_baseline.jsonl"
-log_info "       bash evaluate.sh django/test_with_experience_${TIMESTAMP}.jsonl"
+log_info "  1. Compare results: $TEST_BASELINE_FILE vs $WITH_EXP_FILE"
+log_info "  2. Re-run evaluations if needed:"
+log_info "       bash evaluate.sh $TEST_BASELINE_FILE"
+log_info "       bash evaluate.sh $WITH_EXP_FILE"
 echo ""
 
 log_success "All logs saved to: ${LOG_DIR}/"

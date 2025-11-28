@@ -1,17 +1,19 @@
 # SWE-Exp Quickstart
 
 ## Objective
-Compare 30 test instances solved **without** vs **with** experience learned from 199 train instances.
+Compare 30 test instances solved **without** vs **with** experience learned from a 201-instance train set (actual runs may be fewer if some train cases are intentionally skipped).
 
 ## Prerequisites
 
 ### Required Files
 ```
 SWE-Exp/
-├── .env                    # ANTHROPIC_API_KEY=sk-ant-...
-├── train_instances.txt     # 199 train instance IDs (one per line)
-├── instances_fail.txt      # 2 failed train instance IDs
-└── test_instances.txt      # 30 test instance IDs (one per line)
+├── .env                           # ANTHROPIC_API_KEY=sk-ant-...
+├── train_instances_expected.txt   # 201 train instance IDs (expected, one per line)
+├── test_instances_expected.txt    # 30 test instance IDs (expected, one per line)
+├── train_instances_actual.txt     # AUTO-GENERATED after Stage 1
+├── test_instances_actual.txt      # AUTO-GENERATED after Stage 1
+└── instances_fail.txt             # 2 known hard train IDs (included in expected list)
 ```
 
 ### Setup
@@ -31,22 +33,24 @@ echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 Collect baseline trajectories and patches without any prior experience.
 
 ```bash
-# Train (199 instances): Collect trajectories for experience extraction
-bash stage1.sh train train_instances.txt
+# Train (201 expected): Collect trajectories for experience extraction
+bash stage1.sh train train_instances_expected.txt
 
 # Test (30 instances): Collect baseline results for comparison
-bash stage1.sh test test_instances.txt
+bash stage1.sh test test_instances_expected.txt
 ```
 
 **Features:**
 - Auto-retries failed instances
 - Train: keeps trajectories in `tmp/trajectory/` for experience extraction
 - Test: moves trajectories to `tmp/trajectory_test_backup/` to prevent data leakage
+- Auto-generates `train_instances_actual.txt` and `test_instances_actual.txt` (downstream stages use these actual lists so you don't have to rerun hard instances)
 
 **Output:**
-- `django/train_baseline.jsonl` - 199 train results
-- `django/test_baseline.jsonl` - 30 test results (baseline)
-- `tmp/trajectory/` - 199 train trajectories only (pipeline will move any test trajectories out)
+- `django/train_baseline.jsonl` - train results
+- `django/test_baseline.jsonl` - test results (baseline)
+- `train_instances_actual.txt`, `test_instances_actual.txt` - actual IDs collected in this run
+- `tmp/trajectory/` - train trajectories only (pipeline will move any test trajectories out)
 - `tmp/trajectory_test_backup/` - Backup location for test trajectories
 
 **If instances fail or are incomplete:**
@@ -60,7 +64,7 @@ bash rerun_incomplete.sh
 ```
 
 This script will:
-- ✓ Compare `train_baseline.jsonl` against `train_instances.txt` (199 expected)
+- ✓ Compare `train_baseline.jsonl` against `train_instances_expected.txt` (201 expected)
 - ✓ Identify missing instances or instances without patches
 - ✓ Auto-update `instances_to_rerun.txt`
 - ✓ Remove old incomplete trajectories
@@ -74,7 +78,7 @@ bash stage1.sh train instances_to_rerun_train.txt
 bash stage1.sh test instances_to_rerun_test.txt
 ```
 
-### Stages 1.5-5: Experience Pipeline (WITH Experience)
+### Stages 1.1-5: Experience Pipeline (WITH Experience)
 
 After Stage 1 completes (trajectories collected), run the experience pipeline.
 
@@ -83,27 +87,24 @@ bash pipeline.sh
 ```
 
 **What it does:**
-1. **Stage 1.5**: Evaluate train patches with Docker (~50 hours)
-   - **Default: ENABLED** - Gets correct SUCCESS/FAILURE labels for all 199 training instances
-   - Runs SWE-bench harness to determine which training patches actually pass tests
-   - **IMPORTANT**: Must run BEFORE experience extraction to get correct labels (pipeline enforces this)
-2. **Stage 2**: Extract issue types from 199 train trajectories
-3. **Stage 3**: Build experience tree from 199 train instances (with 3x retry)
-   - Uses `tmp/merged_leaf_analysis_with_trajectories.jsonl` (prepared in Stage 1.5)
-   - Retries failed extractions up to 3 times per instance
-4. **Stage 3.5**: Extract issue types from 30 test instances
-   - Enables test instances to query the train-only experience database
-   - Verifies no data leakage (test ∩ experience tree = ∅)
-5. **Stage 4**: Run 30 test instances WITH experience
+1. **Stage 1.1**: Evaluate train patches with Docker (default ON)
+   - Uses `train_baseline.jsonl` (actual train runs) to label SUCCESS/FAILURE
+2. **Stage 2**: Extract issue types from train trajectories
+3. **Stage 2.1**: Build experience tree from train trajectories
+   - Uses `tmp/merged_leaf_analysis_with_trajectories.jsonl` prepared in Stage 1.1
+4. **Stage 3**: Extract issue types from test instances (no leakage)
+   - Uses `test_instances_actual.txt`
+5. **Stage 4**: Run test instances WITH experience
+   - Uses `test_instances_actual.txt`
 6. **Stage 5**: Evaluate test patches (baseline + with-experience) via `evaluate.sh`
 
 **Prerequisites check:**
-- `tmp/trajectory/` must have 199 train trajectories
-- `django/test_baseline.jsonl` must have 30 test results
+- Stage 1 will log expected vs actual counts (train: 201 expected, test: 30 expected)
+- Downstream stages use `*_actual.txt` so you don't need to rerun hard instances
 
 **Output:**
-- `tmp/het/train_issue_types.json` - Train issue classifications (199)
-- `tmp/het/test_issue_types.json` - Test issue classifications (30)
+- `tmp/het/train_issue_types.json` - Train issue classifications (from `train_instances_actual.txt`)
+- `tmp/het/test_issue_types.json` - Test issue classifications (from `test_instances_actual.txt`)
 - `tmp/het/verified_experience_tree.json` - Experience database (train only)
 - `django/test_with_experience_TIMESTAMP.jsonl` - Test results WITH experience
 - `evaluation_results/eval_test_baseline_*/report.json` - Baseline Docker evaluation
@@ -111,14 +112,14 @@ bash pipeline.sh
 
 ### Stage 5: Evaluation
 
-Evaluate patches using SWE-bench harness.
+Stage 5 of `pipeline.sh` already evaluates baseline and with-experience files using the SWE-bench harness. Rerun manually if you need to regenerate reports:
 
 ```bash
 # Evaluate baseline (WITHOUT experience)
 bash evaluate.sh django/test_baseline.jsonl
 
 # Evaluate WITH experience (use actual timestamp)
-bash evaluate.sh django/test_with_experience_20241119_153045.jsonl
+bash evaluate.sh django/test_with_experience_<TIMESTAMP>.jsonl
 ```
 
 **Requirements:**
@@ -140,13 +141,13 @@ The SWE-Exp experience system has an important distinction between training and 
 - Results used to measure system performance
 - Time: ~7.5 hours for 30 instances
 
-#### Training Instances (199 instances)
-- **By default: YES Docker evaluation** (Stage 1.5 ENABLED for correct labels)
-- Docker evaluation runs for ~50 hours to classify each training instance
-- Experience extraction (Stage 3) uses `resolved` field for correct classification
+#### Training Instances (201 expected)
+- **By default: YES Docker evaluation** (Stage 1.1 ENABLED for correct labels)
+- Docker evaluation runs for ~50 hours to classify each training instance (train_instances_actual.txt)
+- Experience extraction (Stages 2/2.1) uses `resolved` field for correct classification
 - With `resolved` field: Mixed SUCCESS/FAILURE experiences based on actual test results
-- Without `resolved` field: All treated as FAILURE experiences (if Stage 1.5 skipped)
-- **CRITICAL**: Evaluation must happen in Stage 1.5 BEFORE experience extraction (Stages 2-3)
+- Without `resolved` field: All treated as FAILURE experiences (if Stage 1.1 skipped)
+- **CRITICAL**: Evaluation must happen in Stage 1.1 BEFORE experience extraction (Stages 2-3)
 
 ### How Experience Extraction Works
 
@@ -176,7 +177,7 @@ for i in eval:
 - ✅ **NOW ENABLED BY DEFAULT**
 
 **Cons:**
-- ❌ Requires ~50 hours (199 × 15 min)
+- ❌ Requires ~50 hours (train_size × ~15 min)
 - ❌ Significant computational resources
 
 #### Option B: Skip Training Evaluation (Fast Mode)
@@ -187,35 +188,35 @@ for i in eval:
 - ✅ Suitable for quick experimentation
 
 **Cons:**
-- ❌ All 199 training experiences treated as failures
+- ❌ All training experiences treated as failures
 - ❌ Missing successful solution patterns from training set
 - ❌ May reduce experience quality for similar successful cases
 
 ### Training Evaluation: Enabled by Default
 
-**Stage 1.5 is now ENABLED by default** in `pipeline.sh` for correct experience classification.
+**Stage 1.1 is ENABLED by default** in `pipeline.sh` for correct experience classification.
 
 **What happens automatically:**
-1. Runs `evaluate.sh django/train_baseline.jsonl` (~50 hours)
+1. Runs `evaluate.sh django/train_baseline.jsonl` (~50 hours for the train set)
 2. Merges `resolved` status from evaluation results into trajectory data
 3. Creates `tmp/merged_leaf_analysis_with_trajectories.jsonl` with proper classification
-4. Enables correct SUCCESS/FAILURE experience extraction in Stage 3
+4. Enables correct SUCCESS/FAILURE experience extraction in Stages 2/2.1
 
 **Correct workflow order:**
-- ✅ Stage 1 → Stage 1.5 (evaluation) → Stage 2-3 (experience extraction)
-- ❌ Stage 1 → Stage 2-3 → Stage 1.5 (too late, wrong labels!)
+- ✅ Stage 1 → Stage 1.1 (evaluation) → Stage 2/2.1 (experience extraction)
+- ❌ Stage 1 → Stage 2/2.1 → Stage 1.1 (too late, wrong labels!)
 
 ### How to Skip Training Evaluation (Fast Mode)
 
 To skip Docker evaluation and save ~50 hours (but get failure-only experiences), edit `pipeline.sh`:
 
 ```bash
-# In pipeline.sh (around line 136-241):
-# Comment out the Stage 1.5 evaluation block (lines 136-224)
-# Uncomment the "Fast Mode" block (lines 226-241):
+# In pipeline.sh:
+# Comment out the Stage 1.1 evaluation block
+# Uncomment the "Fast Mode" block just below it:
 
 log_info "========================================================================"
-log_info "STAGE 1.5: Skipping Docker Evaluation (Fast Mode)"
+log_info "STAGE 1.1: Skipping Docker Evaluation (Fast Mode)"
 log_info "========================================================================"
 # ... (rest of fast mode block)
 ```
@@ -233,9 +234,11 @@ The similar performance suggests that failure-only experiences may still be valu
 
 ### Input Files
 ```
-├── train_instances.txt              # 199 train IDs
-├── instances_fail.txt               # 2 failed train IDs
-└── test_instances.txt               # 30 test IDs
+├── train_instances_expected.txt      # 201 train IDs (expected)
+├── train_instances_actual.txt        # Generated after Stage 1
+├── test_instances_expected.txt       # 30 test IDs (expected)
+├── test_instances_actual.txt         # Generated after Stage 1
+└── instances_fail.txt                # 2 known hard train IDs (included in expected list)
 ```
 
 ### Key Output Files
@@ -243,49 +246,48 @@ The similar performance suggests that failure-only experiences may still be valu
 #### django/ - Prediction Results (Keep These!)
 ```
 django/
-├── train_baseline.jsonl             # 199 train instances - Stage 1 results (WITHOUT experience)
+├── train_baseline.jsonl             # Train instances - Stage 1 results (WITHOUT experience)
 │                                     # Used to build experience database in Stage 2-3
 │
-├── test_baseline.jsonl              # 30 test instances - Stage 1 results (WITHOUT experience)
+├── test_baseline.jsonl              # Test instances - Stage 1 results (WITHOUT experience)
 │                                     # Baseline for comparison
 │
-├── test_with_experience.jsonl       # 25 test instances - Stage 4 results (WITH experience)
-│                                     # 5 instances timed out, see analysis
+├── test_with_experience_TIMESTAMP.jsonl  # Stage 4 results (WITH experience)
 │
 └── archived_files/                  # Historical backup files
 ```
 
 **Important Notes:**
-- `train_baseline.jsonl`: Generated once from 199 train instances, used as input for experience extraction (Stages 2-3)
-- `test_baseline.jsonl`: Baseline results (30 instances, no experience guidance)
-- `test_with_experience.jsonl`: Results with experience guidance (25/30 completed, 5 timed out)
+- `train_baseline.jsonl`: Generated once from `train_instances_expected.txt`; downstream stages use `train_instances_actual.txt`
+- `test_baseline.jsonl`: Baseline results (uses `test_instances_actual.txt`)
+- `test_with_experience_TIMESTAMP.jsonl`: Results with experience guidance (Stage 4)
 - These are the core files for performance comparison and evaluation
 
 ### Stage 1 Output (WITHOUT Experience)
 ```
 └── tmp/
-    ├── trajectory/                  # 199 TRAIN trajectories only
+    ├── trajectory/                  # TRAIN trajectories only (from train_instances_actual.txt)
     │   ├── django__django-11001/
     │   │   └── 2025-11-22_trajectory.json
     │   └── ...
-    └── trajectory_test_backup/      # 30 test trajectories (backup, prevent leakage)
+    └── trajectory_test_backup/      # Test trajectories (backup, prevent leakage)
 ```
 
 ### Stage 2-3 Output (Experience Extraction)
 ```
 └── tmp/
     └── het/
-        ├── train_issue_types.json          # Train issue types (199)
-        ├── test_issue_types.json           # Test issue types (30)
-        └── verified_experience_tree.json   # Experience database (train only, 199 instances)
+        ├── train_issue_types.json          # Train issue types (train_instances_actual.txt)
+        ├── test_issue_types.json           # Test issue types (test_instances_actual.txt)
+        └── verified_experience_tree.json   # Experience database (train only)
 ```
 
 ### Stage 5 Output (Evaluation)
 ```
 └── evaluation/
-    ├── eval_test_baseline.json             # Evaluation: WITHOUT experience (30 instances)
-    ├── eval_test_with_experience.json      # Evaluation: WITH experience (25 instances)
-    └── comparison_25_common_instances.json # Performance comparison on 25 common instances
+    ├── eval_test_baseline.json             # Evaluation: WITHOUT experience (uses test_instances_actual.txt)
+    ├── eval_test_with_experience.json      # Evaluation: WITH experience
+    └── comparison_<timestamp>.json         # Performance comparison on common instances
 ```
 
 ## Quick Commands
@@ -293,7 +295,7 @@ django/
 ```bash
 # Check Stage 1 completion status
 wc -l django/train_baseline.jsonl django/test_baseline.jsonl
-ls tmp/trajectory/ | wc -l  # Should be 199 (train only)
+ls tmp/trajectory/ | wc -l  # Should match train_instances_actual.txt (train only)
 
 # Check Stage 2-3 output
 ls -lh tmp/het/*.json
@@ -311,14 +313,12 @@ cat evaluation_results/*/report.json | jq '[.[] | select(.resolved == true) | .i
 
 ## Data Split & Leakage Prevention
 
-- **Train (199)**: Older Django instances used to build experience
-  - Originally 201 instances, but 2 failed to generate patches due to timeouts
-  - Failed instances (recorded in `instances_fail.txt`):
-    - `django__django-13212`
-    - `django__django-13513`
-  - Successfully completed: 199 instances in `train_instances.txt`
-- **Test (30)**: Latest 30 Django instances from SWE-bench_Verified
-- **No overlap**: Test instances are NOT in train set
+- **Train (201 expected)**: Django instances used to build experience
+  - Includes two known hard IDs in `instances_fail.txt`; they stay in the expected list even if they fail to run
+  - Actual runs are recorded in `train_instances_actual.txt` after Stage 1
+- **Test (30)**: Latest 30 Django instances from SWE-bench_Verified (`test_instances_expected.txt`)
+  - Actual runs are recorded in `test_instances_actual.txt` after Stage 1
+- **No overlap**: Test instances are NOT in train set (pipeline verifies)
 
 **Data Leakage Prevention:**
 - Explicit train/test split (separate files, not repo-based filtering)
@@ -337,7 +337,7 @@ bash rerun_incomplete.sh
 ```
 
 The script will:
-1. Check `train_baseline.jsonl` against `train_instances.txt` (199 total)
+1. Check `train_baseline.jsonl` against `train_instances_expected.txt` (201 total) and `train_instances_actual.txt`
 2. Find instances that are missing or without patches
 3. Update `instances_to_rerun.txt` automatically
 4. Clean up incomplete trajectories
@@ -363,13 +363,13 @@ bash rerun_incomplete.sh
 ### Stage 2-4: Prerequisites not met
 ```bash
 # Check trajectory count
-ls tmp/trajectory/ | wc -l  # Must be 199
+ls tmp/trajectory/ | wc -l  # Should match train_instances_actual.txt (<= 201)
 
 # Check test baseline exists
-wc -l django/test_baseline.jsonl  # Must be 30
+wc -l django/test_baseline.jsonl  # Should be <= 30 (matches test_instances_actual.txt)
 
 # Verify no test trajectories leaked into train
-ls tmp/trajectory/ | grep -f test_instances.txt  # Should be empty
+ls tmp/trajectory/ | grep -f test_instances_expected.txt  # Should be empty
 ```
 
 ### Stage 3: KeyError: 'leaf' or 'leaf_id'
@@ -401,24 +401,24 @@ To compare 30 test instances WITHOUT vs WITH experience:
 
 ```bash
 # Prerequisites: You should already have these from Stage 1
-# - django/train_baseline.jsonl (199 train instances)
-# - django/test_baseline.jsonl (30 test instances WITHOUT experience)
-# - tmp/trajectory/ (199 train trajectories)
+# - django/train_baseline.jsonl (train_instances_actual.txt)
+# - django/test_baseline.jsonl (test_instances_actual.txt WITHOUT experience)
+# - tmp/trajectory/ (train trajectories)
 
-# Step 1: Run experience pipeline (Stages 1.5-5)
+# Step 1: Run experience pipeline (Stages 1.1-5)
 bash pipeline.sh
 # This will:
-# - Extract experiences from 199 train instances
-# - Extract issue types for 30 test instances (Stage 3.5)
-# - Apply experiences to 30 test instances (Stage 4)
+# - Extract experiences from train instances (Stages 2/2.1)
+# - Extract issue types for test instances (Stage 3)
+# - Apply experiences to test instances (Stage 4)
 # - Evaluate baseline + with-experience patches (Stage 5)
 # - Output: django/test_with_experience_TIMESTAMP.jsonl and evaluation_results/*
 ```
 
-**Summary:** After Stage 1, running `pipeline.sh` completes Stages 1.5–5 and produces both patch files and evaluation reports.
+**Summary:** After Stage 1, running `pipeline.sh` completes Stages 1.1–5 and produces both patch files and evaluation reports.
 
 ## Experience Source, Format, and Usage (Brief)
 
-- **Source:** Experiences are mined from the 199 train trajectories after Docker evaluation in Stage 1.5. Each train instance is labeled `resolved=True/False`; successes yield “success” experiences, failures yield “failed” reflections.
+- **Source:** Experiences are mined from the train trajectories after Docker evaluation in Stage 1.1. Each train instance is labeled `resolved=True/False`; successes yield “success” experiences, failures yield “failed” reflections.
 - **Format:** Stored in `tmp/verified_experience_tree.json` (copied to `tmp/het/`). Keys are train instance IDs; each value includes fields like `perspective`, `positioning`, `modification`, and a `flag` of `success` or `failed`.
 - **Usage:** During Stage 4, `workflow.py` loads `tmp/het/verified_experience_tree.json` plus test issue types. `SelectAgent` retrieves the most relevant train experience, generalizes it to the current test issue, and injects the guidance into the agent prompt (`***Experience 1***: ...`). Modification steps also get enhanced instructions based on the selected experience.

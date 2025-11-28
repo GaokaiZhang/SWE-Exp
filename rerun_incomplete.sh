@@ -5,6 +5,8 @@
 
 set -e
 
+EXPECTED_TRAIN_FILE="train_instances_expected.txt"
+
 echo "=========================================================================="
 echo "RERUNNING INCOMPLETE INSTANCES"
 echo "=========================================================================="
@@ -108,16 +110,17 @@ echo "==========================================================================
 echo "Step 7: Checking completion status..."
 echo "=========================================================================="
 
-python3 << 'CHECK_COMPLETION'
+EXPECTED_TRAIN_FILE="$EXPECTED_TRAIN_FILE" python3 << 'CHECK_COMPLETION'
 import json
 import os
 
 # Read expected train instances
-if not os.path.exists('train_instances.txt'):
-    print("✗ ERROR: train_instances.txt not found!")
+expected_path = os.environ["EXPECTED_TRAIN_FILE"]
+if not os.path.exists(expected_path):
+    print(f"✗ ERROR: {expected_path} not found!")
     exit(1)
 
-with open('train_instances.txt', 'r') as f:
+with open(expected_path, 'r') as f:
     expected_instances = set(line.strip() for line in f if line.strip())
 
 print(f"Expected train instances: {len(expected_instances)}")
